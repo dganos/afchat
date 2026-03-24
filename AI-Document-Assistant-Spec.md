@@ -782,27 +782,26 @@ This method sends the full Vercel AI SDK streaming protocol. The `useChat` hook 
 
 Claude Code should create all of the following files:
 
-- [ ] `package.json`
-- [ ] `main.js`
-- [ ] `vite.config.js`
-- [ ] `tailwind.config.js`
-- [ ] `postcss.config.js`
-- [ ] `.gitignore`
-- [ ] `api/chat.js`
-- [ ] `renderer/index.html`
-- [ ] `renderer/src/index.jsx`
-- [ ] `renderer/src/index.css`
-- [ ] `renderer/src/App.jsx`
-- [ ] `resources/documents/example.md`
+- [x] `package.json` ✅ (updated: Next.js replaces Vite, added shadcn/radix/lucide deps)
+- [x] `main.js` ✅ (updated to load `out/index.html` from Next.js static export)
+- [x] `next.config.js` ✅ (replaces `vite.config.js` — static export with `output: 'export'`)
+- [x] `tailwind.config.js` ✅ (updated with shadcn CSS variables)
+- [x] `postcss.config.js` ✅
+- [x] `.gitignore` ✅ (updated for Next.js: added `.next/`, `out/`, replaced `renderer/dist/`)
+- [x] `api/chat.js` ✅ (unchanged from spec)
+- [x] `app/layout.jsx` ✅ (replaces `renderer/index.html` + `renderer/src/index.jsx` — Next.js root layout)
+- [x] `app/page.jsx` ✅ (replaces `renderer/src/App.jsx` — Chat UI with AI Elements + Streamdown)
+- [x] `app/globals.css` ✅ (replaces `renderer/src/index.css` — Tailwind + shadcn CSS variables)
+- [x] `resources/documents/example.md` ✅ (unchanged from spec)
 
 ## Testing Checklist
 
 After Claude Code implements all files, verify:
 
-1. `npm install` completes without errors
+1. ✅ `npm install` completes (796 packages installed)
 2. `npm start` launches without errors
 3. Ollama starts and model loads (check terminal logs for `[ollama]`)
-4. API health check responds: `curl http://localhost:3001/health` → `ok`
+4. ✅ API health check responds: `curl http://localhost:3001/health` → `ok`
 5. Sending "what documents do you have?" shows 📁 listFiles badge then lists files
 6. Sending a question about the example doc shows 🔍 and 📄 badges before the answer
 7. Answer renders with Streamdown markdown formatting
