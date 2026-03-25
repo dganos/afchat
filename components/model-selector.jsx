@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { Cpu, ChevronDown, Check, AlertTriangle, Loader2 } from 'lucide-react'
+import { Cpu, ChevronDown, Check, AlertTriangle } from 'lucide-react'
+import { HelicopterLoader } from '@/components/helicopter-loader'
 
 const API = 'http://localhost:3001'
 
@@ -96,7 +97,7 @@ export function ModelSelector({ onModelChange }) {
           <div className="max-h-64 overflow-y-auto">
             {loading ? (
               <div className="flex items-center justify-center py-6 gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <HelicopterLoader className="h-5 w-5" />
                 Loading models...
               </div>
             ) : models.length === 0 ? (
@@ -118,7 +119,7 @@ export function ModelSelector({ onModelChange }) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="text-sm font-medium truncate">{m.name}</span>
-                      {switching === m.name && <Loader2 className="h-3 w-3 animate-spin" />}
+                      {switching === m.name && <HelicopterLoader className="h-4 w-4" />}
                     </div>
                     <div className="flex gap-2 text-[11px] text-muted-foreground">
                       <span>{formatBytes(m.size)}</span>

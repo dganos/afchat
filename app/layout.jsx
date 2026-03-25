@@ -2,7 +2,7 @@ import './globals.css'
 import 'streamdown/styles.css'
 
 export const metadata = {
-  title: 'Document Assistant',
+  title: '124 Chat Agent',
 }
 
 export default function RootLayout({ children }) {

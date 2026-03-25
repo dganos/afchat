@@ -8,7 +8,8 @@ import { Conversation, ConversationContent, ConversationScrollButton } from '@/c
 import { Message, MessageContent } from '@/components/ai-elements/message'
 import { PromptInput, PromptInputTextarea, PromptInputSubmit } from '@/components/ai-elements/prompt-input'
 import { Tool } from '@/components/ai-elements/tool'
-import { FileQuestion, FolderOpen, Settings2 } from 'lucide-react'
+import { FolderOpen, Settings2 } from 'lucide-react'
+import { HelicopterLoader } from '@/components/helicopter-loader'
 import { LogsPanel } from '@/components/logs-panel'
 import { DocumentsPanel } from '@/components/documents-panel'
 import { ModelSelector } from '@/components/model-selector'
@@ -44,18 +45,20 @@ export default function ChatPage() {
 
   const [docsOpen, setDocsOpen] = useState(false)
   const isStreaming = status === 'streaming'
+  const isWaiting = status === 'submitted'
+  const isBusy = isStreaming || isWaiting
   const bottomRef = useRef(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages, status])
 
   return (
     <div className="flex flex-col h-screen">
       {/* Header */}
       <header className="flex items-center gap-2.5 px-4 py-3 border-b bg-background shadow-sm">
-        <FileQuestion className="h-5 w-5 text-primary" />
-        <span className="font-semibold text-foreground">Document Assistant</span>
+        <HelicopterLoader className="h-6 w-6 text-primary" spinning={false} />
+        <span className="font-semibold text-foreground">124 Chat Agent</span>
         <div className="ml-auto flex items-center gap-1">
           <ModelSelector />
           <button
@@ -80,7 +83,7 @@ export default function ChatPage() {
           {/* Empty state */}
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-[60vh] text-muted-foreground gap-3">
-              <FileQuestion className="h-12 w-12" />
+              <HelicopterLoader className="h-16 w-16 text-muted-foreground" spinning={false} />
               <p className="text-lg font-medium">Ask me anything about your documents</p>
               <p className="text-sm">I&apos;ll search and read them to find your answer</p>
             </div>
@@ -88,7 +91,7 @@ export default function ChatPage() {
 
           {/* Message list */}
           {messages.map((msg) => (
-            <Message key={msg.id} from={msg.role}>
+            <Message key={msg.id} from={msg.role} isThinking={isBusy && msg.role === 'assistant' && msg === messages[messages.length - 1]}>
               <MessageContent from={msg.role}>
                 {msg.parts?.map((part, i) => {
                   if (part.type === 'tool-invocation') {
@@ -124,6 +127,15 @@ export default function ChatPage() {
             </Message>
           ))}
 
+          {/* Thinking indicator — shown while waiting for response */}
+          {isWaiting && (
+            <div className="flex gap-3 mb-6">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <HelicopterLoader className="h-5 w-5" />
+              </div>
+            </div>
+          )}
+
           <div ref={bottomRef} />
         </ConversationContent>
         <ConversationScrollButton />
@@ -134,11 +146,11 @@ export default function ChatPage() {
         <PromptInputTextarea
           value={input}
           onChange={handleInputChange}
-          disabled={isStreaming}
+          disabled={isBusy}
         />
         <PromptInputSubmit
-          isStreaming={isStreaming}
-          disabled={isStreaming || !input.trim()}
+          isStreaming={isBusy}
+          disabled={isBusy || !input.trim()}
         />
       </PromptInput>
 

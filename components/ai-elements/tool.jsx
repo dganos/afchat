@@ -1,7 +1,8 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { ChevronRight, Loader2, CheckCircle2, FileText, FolderOpen, Search } from 'lucide-react'
+import { ChevronRight, CheckCircle2, FileText, FolderOpen, Search } from 'lucide-react'
+import { HelicopterLoader } from '@/components/helicopter-loader'
 
 const toolIcons = {
   listFiles: FolderOpen,
@@ -27,7 +28,7 @@ export function Tool({ toolName, state, result, className }) {
         >
           {isDone
             ? <CheckCircle2 className="h-3.5 w-3.5" />
-            : <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            : <HelicopterLoader className="h-4 w-4" />
           }
           <Icon className="h-3.5 w-3.5" />
           <span className="font-mono">{toolName}</span>
