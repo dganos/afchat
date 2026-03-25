@@ -1,0 +1,7 @@
+node_modules/
+resources/models/
+resources/ollama/
+.next/
+out/
+dist/
+.env
