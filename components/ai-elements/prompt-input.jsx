@@ -25,6 +25,12 @@ export function PromptInputTextarea({ value, onChange, placeholder = 'Ask about 
     }
   }, [value])
 
+  React.useEffect(() => {
+    if (!disabled && textareaRef.current) {
+      textareaRef.current.focus()
+    }
+  }, [disabled])
+
   return (
     <textarea
       ref={textareaRef}
