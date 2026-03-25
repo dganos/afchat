@@ -1,150 +1,97 @@
 # Local AI Document Assistant
 
-A fully offline, air-gapped desktop application that lets you ask questions about a local document library. Uses a locally-running LLM (deepseek-r1:8b via Ollama) to agentically search and read documents — the model decides what to look for rather than using pre-built RAG/vector search.
+A fully offline desktop app that answers questions about your local documents. It runs an LLM locally via Ollama — no internet required.
 
-## Architecture
-
-```
-Electron App
-├── main.js                          ← starts Ollama + Node API, opens window
-├── api/
-│   └── chat.js                      ← Node.js HTTP server, AI SDK + tools
-├── app/                             ← Next.js app directory (static export)
-│   ├── layout.jsx                   ← Root layout
-│   ├── page.jsx                     ← Chat UI (AI Elements + Streamdown)
-│   └── globals.css                  ← Tailwind + shadcn CSS variables
-├── components/
-│   ├── ai-elements/                 ← Chat UI components
-│   │   ├── conversation.jsx         ← Auto-scrolling chat container
-│   │   ├── message.jsx              ← Message bubbles with avatars
-│   │   ├── prompt-input.jsx         ← Input with auto-resize textarea
-│   │   └── tool.jsx                 ← Collapsible tool call badges
-│   └── ui/                          ← shadcn/ui base components
-│       ├── button.jsx
-│       ├── collapsible.jsx
-│       └── scroll-area.jsx
-├── lib/
-│   └── utils.js                     ← cn() utility
-├── resources/                       ← bundled assets (not in git)
-│   ├── ollama/                      ← Ollama binary (platform-specific)
-│   ├── models/                      ← Model files from ~/.ollama/models
-│   └── documents/                   ← Your document library
-│       └── example.md
-├── package.json
-├── next.config.js
-└── tailwind.config.js
-```
-
-## How It Works
-
-```
-User types question in React UI
-        ↓
-useChat (Vercel AI SDK) POSTs to http://localhost:3001/chat
-        ↓
-api/chat.js receives messages, calls streamText with tools
-        ↓
-deepseek-r1:8b model thinks, decides what documents to read
-        ↓
-Model calls tools: listFiles → searchText → readFile
-        ↓
-Model streams final answer back
-        ↓
-Streamdown renders markdown answer with animations in UI
-```
-
-The model has access to three tools:
-
-| Tool | Description |
-|------|-------------|
-| `listFiles` | Lists all documents in the library |
-| `searchText` | Searches for keywords across all documents (case-insensitive) |
-| `readFile` | Reads full content of a specific file (truncated at 8000 chars) |
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Desktop shell | Electron |
-| LLM runtime | Ollama (bundled binary) |
-| Model | deepseek-r1:8b |
-| API server | Node.js `http` module (port 3001) |
-| AI SDK | `ai` + `ollama-ai-provider` (tool calling, streaming) |
-| Frontend | React 18 + Next.js (static export) |
-| Chat state | `@ai-sdk/react` `useChat` hook |
-| Chat UI | AI Elements pattern (Conversation, Message, Tool, PromptInput) |
-| UI components | shadcn/ui (Button, ScrollArea, Collapsible) |
-| Markdown | Streamdown + @streamdown/code (animated streaming) |
-| Styling | Tailwind CSS + shadcn CSS variables |
-| Packager | electron-builder |
-
-## Prerequisites
+## Requirements
 
 - **Node.js** >= 18
-- **Ollama** installed on your dev machine (`ollama.com/download`)
-- **deepseek-r1:8b** model pulled: `ollama pull deepseek-r1:8b`
+- **Ollama** — download from [ollama.com/download](https://ollama.com/download)
 
-## Setup
+## Installation
 
-### 1. Install dependencies
+### 1. Clone and install
 
 ```bash
+git clone <repo-url>
+cd afchat
 npm install
 ```
 
-### 2. Set up resources (one-time, not in git)
+### 2. Set up Ollama and the model
 
 ```bash
-# Pull the model if you haven't already
+# Pull the model
 ollama pull deepseek-r1:8b
 
-# Copy model files into project
+# Copy model files into the project
 cp -r ~/.ollama/models ./resources/models
 
-# Download Ollama binary for your platform from https://ollama.com/download
-# Place at:
-#   Linux/macOS: ./resources/ollama/ollama
-#   Windows:     ./resources/ollama/ollama.exe
+# Copy the Ollama binary into the project
 mkdir -p ./resources/ollama
-# cp /path/to/ollama ./resources/ollama/ollama
-chmod +x ./resources/ollama/ollama   # Linux/macOS only
+
+# Linux/macOS:
+cp $(which ollama) ./resources/ollama/ollama
+chmod +x ./resources/ollama/ollama
+
+# Windows:
+# Copy ollama.exe to ./resources/ollama/ollama.exe
 ```
 
 ### 3. Add your documents
 
-Place your documents (`.md`, `.txt`, `.json`, etc.) in `resources/documents/`. A sample `example.md` is included.
+Put your files (`.md`, `.txt`, `.json`, etc.) into `resources/documents/`.
 
-## Running
+A sample `example.md` is already included for testing.
 
-### Quick start (build + launch)
+## Running the App
 
 ```bash
 npm start
 ```
 
-This runs `next build` to compile the renderer, then launches Electron.
+This builds the UI and launches the Electron app. On startup it will:
+1. Start the bundled Ollama server
+2. Start the API server on port 3001
+3. Wait for both to be ready
+4. Open the chat window
 
-### Development (separate terminals)
-
-```bash
-# Terminal 1 — run Ollama
-ollama serve
-
-# Terminal 2 — build Next.js and watch for changes
-npx next dev
-
-# Terminal 3 — start the API server
-DOCS_PATH=./resources/documents node api/chat.js
-
-# Terminal 4 — start Electron
-npx electron .
-```
-
-### Dev mode (concurrent)
+### Development mode
 
 ```bash
 npm run dev
 ```
+
+Runs Next.js dev server and Electron concurrently with hot reload.
+
+### Manual development (separate terminals)
+
+```bash
+# Terminal 1 — Ollama
+ollama serve
+
+# Terminal 2 — API server
+DOCS_PATH=./resources/documents node api/chat.js
+
+# Terminal 3 — Electron
+npx electron .
+```
+
+## Using the App
+
+1. Type a question in the input field at the bottom
+2. The assistant searches your documents automatically — you'll see tool badges appear:
+   - **listFiles** — browsing available documents
+   - **searchText** — searching for keywords
+   - **readFile** — reading a specific file
+3. The answer streams in with formatted markdown and code highlighting
+4. Press **Enter** to send, **Shift+Enter** for a new line
+
+### Example questions
+
+- "What documents do you have?"
+- "What are the system requirements?"
+- "How do I install the application?"
+- "What should I do if the app fails to start?"
 
 ## Building an Installer
 
@@ -152,82 +99,71 @@ npm run dev
 npm run build
 ```
 
-Output files:
-- **Linux**: `dist/Document Assistant.AppImage`
-- **Windows**: `dist/Document Assistant Setup.exe`
-- **macOS**: `dist/Document Assistant.dmg`
+Produces a standalone installer:
 
-Copy the output file to a USB drive and run on an air-gapped device. No internet required.
+| Platform | Output |
+|----------|--------|
+| Linux | `dist/Document Assistant.AppImage` |
+| Windows | `dist/Document Assistant Setup.exe` |
+| macOS | `dist/Document Assistant.dmg` |
 
-## Adding Pages
-
-Next.js file-based routing makes it easy to add new pages:
-
-```
-app/
-├── page.jsx           ← / (Chat - existing)
-├── settings/
-│   └── page.jsx       ← /settings
-├── documents/
-│   └── page.jsx       ← /documents
-└── history/
-    └── page.jsx       ← /history
-```
-
-Just create a folder with a `page.jsx` file — it automatically becomes a route.
+Copy to a USB drive and run on any machine. No internet needed.
 
 ## Configuration
 
-### Environment Variables
+### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DOCS_PATH` | `./resources/documents` | Path to your document library |
+| `DOCS_PATH` | `./resources/documents` | Path to your document folder |
 | `OLLAMA_HOST` | `127.0.0.1:11434` | Ollama server address |
-| `OLLAMA_MODELS` | `./resources/models` | Path to bundled model files |
+| `OLLAMA_MODELS` | `./resources/models` | Path to model files |
 
-### Customizing the Model
+### Changing the model
 
-Edit `api/chat.js` line 7:
+Edit `api/chat.js`:
 
 ```js
 const MODEL = 'deepseek-r1:8b'  // Change to any Ollama-supported model
 ```
 
-### Customizing the System Prompt
+Then pull the new model with `ollama pull <model-name>` and copy the updated model files to `resources/models/`.
 
-Edit the `SYSTEM_PROMPT` constant in `api/chat.js` to change how the assistant behaves.
+### Changing the system prompt
 
-## Key Implementation Details
+Edit the `SYSTEM_PROMPT` constant in `api/chat.js`.
 
-- **Air-gapped**: Everything runs locally — Ollama binary, model weights, and documents are all bundled
-- **Path security**: All file access is validated to stay within `DOCS_PATH` (prevents path traversal)
-- **Context window**: `readFile` truncates at 8000 chars; the model can use `searchText` for targeted lookups
-- **Multi-step tool calling**: `maxSteps: 10` allows the model to chain `listFiles → searchText → readFile`
-- **Streaming protocol**: `pipeDataStreamToResponse` sends the full Vercel AI SDK protocol; `useChat` understands it natively
-- **Static export**: Next.js builds to plain HTML/JS/CSS in `out/` — no server at runtime, just Electron loading static files
+### Adding your own documents
 
-## Project Structure
+Drop files into `resources/documents/`. The assistant picks them up immediately — no restart needed. Supported formats: any text-based file (`.md`, `.txt`, `.csv`, `.json`, `.xml`, `.html`, etc.).
 
-```
-.
-├── api/chat.js                     # HTTP server + AI SDK tools
-├── app/                            # Next.js pages
-│   ├── globals.css                 # Tailwind + theme variables
-│   ├── layout.jsx                  # Root HTML layout
-│   └── page.jsx                    # Chat page
-├── components/
-│   ├── ai-elements/                # Chat-specific components
-│   └── ui/                         # shadcn/ui primitives
-├── lib/utils.js                    # Utility functions
-├── resources/documents/            # Your documents go here
-├── main.js                         # Electron entry point
-├── next.config.js                  # Next.js config (static export)
-├── tailwind.config.js              # Tailwind + shadcn theme
-├── postcss.config.js               # PostCSS config
-├── components.json                 # shadcn/ui config
-├── jsconfig.json                   # Path aliases (@/)
-└── package.json                    # Dependencies + scripts
+## Troubleshooting
+
+### App won't start
+
+- Check that `resources/ollama/ollama` exists and is executable (`chmod +x`)
+- Check that `resources/models/` contains model files (run `ollama pull deepseek-r1:8b` and copy again)
+- Check the terminal for `[ollama]` log output
+
+### "Service not ready" error
+
+The app waits up to 20 seconds for Ollama and the API server to start. If your machine is slow, the timeout may be too short. Edit `main.js` and increase the `retries` parameter in `waitForPort()`.
+
+### Model gives wrong answers
+
+- Make sure your documents are in `resources/documents/`
+- Try asking "what documents do you have?" to verify the assistant can see your files
+- Large files are truncated at 8000 characters — split long documents into smaller files
+
+### Port already in use
+
+If port 3001 or 11434 is already in use, kill the existing process:
+
+```bash
+# Find and kill process on port 3001
+lsof -ti:3001 | xargs kill
+# Find and kill process on port 11434
+lsof -ti:11434 | xargs kill
 ```
 
 ## License
