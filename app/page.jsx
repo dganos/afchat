@@ -28,7 +28,7 @@ export default function ChatPage() {
       <header className="flex items-center gap-2.5 px-4 py-3 border-b bg-background shadow-sm">
         <FileQuestion className="h-5 w-5 text-primary" />
         <span className="font-semibold text-foreground">Document Assistant</span>
-        <span className="text-xs text-muted-foreground ml-auto">Powered by deepseek-r1:8b</span>
+        <span className="text-xs text-muted-foreground ml-auto">Powered by deepseek-r1:1.5b</span>
       </header>
 
       {/* Messages */}

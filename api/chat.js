@@ -5,7 +5,7 @@ const { createOllama } = require('ollama-ai-provider')
 const { streamText } = require('ai')
 const { z } = require('zod')
 
-const MODEL = 'deepseek-r1:8b'
+const MODEL = 'deepseek-r1:1.5b'
 const DOCS_PATH = process.env.DOCS_PATH || path.join(__dirname, '../resources/documents')
 const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
 

@@ -36,7 +36,7 @@ useChat (Vercel AI SDK) POSTs to http://localhost:3001/chat
         ↓
 api/chat.js receives messages, calls streamText with tools
         ↓
-deepseek-r1:8b model thinks, decides what documents to read
+deepseek-r1:1.5b model thinks, decides what documents to read
         ↓
 Model calls tools: listFiles → searchText → readFile
         ↓
@@ -51,7 +51,7 @@ Streamdown renders markdown answer with animations in UI
 |-------|-----------|---------|
 | Desktop shell | Electron | Packages app, spawns subprocesses |
 | LLM runtime | Ollama (Go binary) | Runs the model locally |
-| Model | deepseek-r1:8b | Reasoning + tool calling |
+| Model | deepseek-r1:1.5b | Reasoning + tool calling |
 | API server | Node.js http module | Bridge between UI and Ollama |
 | AI SDK | ai + ollama-ai-provider | Tool calling, streaming protocol |
 | Frontend framework | React 18 | UI |
@@ -94,7 +94,7 @@ Streamdown renders markdown answer with animations in UI
 
 ```bash
 # Pull model
-ollama pull deepseek-r1:8b
+ollama pull deepseek-r1:1.5b
 
 # Copy model files into project
 cp -r ~/.ollama/models ./resources/models
@@ -294,7 +294,7 @@ const { createOllama } = require('ollama-ai-provider')
 const { streamText } = require('ai')
 const { z } = require('zod')
 
-const MODEL = 'deepseek-r1:8b'
+const MODEL = 'deepseek-r1:1.5b'
 const DOCS_PATH = process.env.DOCS_PATH || path.join(__dirname, '../resources/documents')
 const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
 
@@ -768,7 +768,7 @@ Use `process.platform === 'win32'` to pick `ollama.exe` vs `ollama`.
 
 ### 5. Context window management
 
-`deepseek-r1:8b` has a limited context window (~8192 tokens). The `readFile` tool truncates at 8000 characters. If a document is truncated, the model sees `truncated: true` and can use `searchText` to find specific sections instead of reading the whole file.
+`deepseek-r1:1.5b` has a limited context window (~8192 tokens). The `readFile` tool truncates at 8000 characters. If a document is truncated, the model sees `truncated: true` and can use `searchText` to find specific sections instead of reading the whole file.
 
 ### 6. maxSteps is critical
 

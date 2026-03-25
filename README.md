@@ -21,7 +21,7 @@ npm install
 
 ```bash
 # Pull the model
-ollama pull deepseek-r1:8b
+ollama pull deepseek-r1:1.5b
 
 # Copy model files into the project
 cp -r ~/.ollama/models ./resources/models
@@ -124,7 +124,7 @@ Copy to a USB drive and run on any machine. No internet needed.
 Edit `api/chat.js`:
 
 ```js
-const MODEL = 'deepseek-r1:8b'  // Change to any Ollama-supported model
+const MODEL = 'deepseek-r1:1.5b'  // Change to any Ollama-supported model
 ```
 
 Then pull the new model with `ollama pull <model-name>` and copy the updated model files to `resources/models/`.
@@ -142,7 +142,7 @@ Drop files into `resources/documents/`. The assistant picks them up immediately 
 ### App won't start
 
 - Check that `resources/ollama/ollama` exists and is executable (`chmod +x`)
-- Check that `resources/models/` contains model files (run `ollama pull deepseek-r1:8b` and copy again)
+- Check that `resources/models/` contains model files (run `ollama pull deepseek-r1:1.5b` and copy again)
 - Check the terminal for `[ollama]` log output
 
 ### "Service not ready" error
