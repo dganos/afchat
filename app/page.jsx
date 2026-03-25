@@ -3,18 +3,22 @@
 import { useChat } from '@ai-sdk/react'
 import { Streamdown } from 'streamdown'
 import { code } from '@streamdown/code'
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
 import { Message, MessageContent } from '@/components/ai-elements/message'
 import { PromptInput, PromptInputTextarea, PromptInputSubmit } from '@/components/ai-elements/prompt-input'
 import { Tool } from '@/components/ai-elements/tool'
-import { FileQuestion } from 'lucide-react'
+import { FileQuestion, FolderOpen } from 'lucide-react'
+import { LogsPanel } from '@/components/logs-panel'
+import { DocumentsPanel } from '@/components/documents-panel'
+import { ModelSelector } from '@/components/model-selector'
 
 export default function ChatPage() {
   const { messages, input, handleInputChange, handleSubmit, status } = useChat({
     api: 'http://localhost:3001/chat',
   })
 
+  const [docsOpen, setDocsOpen] = useState(false)
   const isStreaming = status === 'streaming'
   const bottomRef = useRef(null)
 
@@ -28,7 +32,16 @@ export default function ChatPage() {
       <header className="flex items-center gap-2.5 px-4 py-3 border-b bg-background shadow-sm">
         <FileQuestion className="h-5 w-5 text-primary" />
         <span className="font-semibold text-foreground">Document Assistant</span>
-        <span className="text-xs text-muted-foreground ml-auto">Powered by deepseek-r1:1.5b</span>
+        <div className="ml-auto flex items-center gap-1">
+          <ModelSelector />
+          <button
+            onClick={() => setDocsOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-muted-foreground rounded-md hover:bg-muted transition-colors"
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            Documents
+          </button>
+        </div>
       </header>
 
       {/* Messages */}
@@ -98,6 +111,9 @@ export default function ChatPage() {
           disabled={isStreaming || !input.trim()}
         />
       </PromptInput>
+
+      <LogsPanel />
+      <DocumentsPanel open={docsOpen} onClose={() => setDocsOpen(false)} />
     </div>
   )
 }

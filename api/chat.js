@@ -1,13 +1,22 @@
 const http = require('http')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 const { createOllama } = require('ollama-ai-provider')
 const { streamText } = require('ai')
 const { z } = require('zod')
+const mammoth = require('mammoth')
+const pdfParse = require('pdf-parse')
 
-const MODEL = 'deepseek-r1:1.5b'
+let currentModel = 'qwen3:1.7b'
 const DOCS_PATH = process.env.DOCS_PATH || path.join(__dirname, '../resources/documents')
 const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
+// ollama-ai-provider v1.2.0 streaming doesn't parse tool_calls from Ollama's
+// response (only tries to infer them from text content). With thinking models
+// like qwen3 the tool calls come in a structured field that the stream parser
+// ignores. simulateStreaming uses the non-streaming API (which handles
+// tool_calls correctly) and wraps the result in a stream for the AI SDK.
+const ollamaModel = (name) => ollama(name, { simulateStreaming: true })
 
 // ── System Prompt ────────────────────────────────────────────────────────────
 
@@ -118,7 +127,7 @@ const tools = {
 const server = http.createServer(async (req, res) => {
   // CORS headers — required for Electron renderer to call this
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
   if (req.method === 'OPTIONS') {
@@ -133,6 +142,9 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+
+  console.log(`[api] ${req.method} ${req.url}`)
+
   if (req.method === 'POST' && req.url === '/chat') {
     // Parse request body
     const body = await new Promise((resolve, reject) => {
@@ -144,9 +156,13 @@ const server = http.createServer(async (req, res) => {
       })
     })
 
+    const msgCount = body.messages?.length || 0
+    const lastMsg = body.messages?.[msgCount - 1]
+    console.log(`[api] chat request: ${msgCount} messages, last from ${lastMsg?.role}`)
+
     try {
       const result = streamText({
-        model: ollama(MODEL),
+        model: ollamaModel(currentModel),
         system: SYSTEM_PROMPT,
         messages: body.messages,
         tools,
@@ -156,10 +172,204 @@ const server = http.createServer(async (req, res) => {
       // pipeDataStreamToResponse sends the full AI SDK stream protocol
       // useChat on the frontend understands this natively — no extra config needed
       result.pipeDataStreamToResponse(res)
+      res.on('finish', () => {
+        console.log(`[api] response stream complete (${res.statusCode})`)
+      })
 
     } catch (err) {
-      console.error('[api] error:', err)
+      console.error('[api] error:', err.message)
       res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err.message }))
+    }
+    return
+  }
+
+  // ── Model Management ─────────────────────────────────────────────────────
+
+  // List available models with RAM info
+  if (req.method === 'GET' && req.url === '/models') {
+    try {
+      const ollamaRes = await fetch('http://localhost:11434/api/tags')
+      const data = await ollamaRes.json()
+
+      const totalRAM = os.totalmem()
+      const freeRAM = os.freemem()
+
+      const models = (data.models || []).map(m => ({
+        name: m.name,
+        size: m.size,
+        parameterSize: m.details?.parameter_size || null,
+        quantization: m.details?.quantization_level || null,
+        family: m.details?.family || null,
+        fitsInRAM: m.size < freeRAM * 0.9,
+      }))
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        currentModel,
+        models,
+        memory: {
+          total: totalRAM,
+          free: freeRAM,
+        }
+      }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err.message }))
+    }
+    return
+  }
+
+  // Select a model
+  if (req.method === 'POST' && req.url === '/models/select') {
+    const body = await new Promise((resolve, reject) => {
+      let data = ''
+      req.on('data', chunk => { data += chunk })
+      req.on('end', () => {
+        try { resolve(JSON.parse(data)) }
+        catch (e) { reject(e) }
+      })
+    })
+
+    if (!body.model) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Missing model field' }))
+      return
+    }
+
+    const freeRAM = os.freemem()
+
+    // Check if model exists in Ollama
+    try {
+      const ollamaRes = await fetch('http://localhost:11434/api/tags')
+      const data = await ollamaRes.json()
+      const match = (data.models || []).find(m => m.name === body.model)
+
+      if (!match) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `Model "${body.model}" not found. Pull it first with: ollama pull ${body.model}` }))
+        return
+      }
+
+      const fitsInRAM = match.size < freeRAM * 0.9
+      if (!fitsInRAM) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+          error: 'Model does not fit in available RAM',
+          modelSize: match.size,
+          freeRAM
+        }))
+        return
+      }
+
+      currentModel = body.model
+      console.log(`[api] model switched to: ${currentModel}`)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: true, model: currentModel, fitsInRAM }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err.message }))
+    }
+    return
+  }
+
+  // ── Document Management ──────────────────────────────────────────────────
+
+  // Read document content
+  if (req.method === 'GET' && req.url.startsWith('/documents/') && req.url.endsWith('/content')) {
+    const filename = decodeURIComponent(req.url.slice('/documents/'.length, -'/content'.length))
+    try {
+      const fullPath = safePath(filename)
+      if (!fs.existsSync(fullPath)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'File not found' }))
+        return
+      }
+
+      const ext = path.extname(filename).toLowerCase()
+      let content = ''
+
+      if (ext === '.pdf') {
+        const buf = fs.readFileSync(fullPath)
+        const data = await pdfParse(buf)
+        content = data.text
+      } else if (ext === '.docx') {
+        const result = await mammoth.extractRawText({ path: fullPath })
+        content = result.value
+      } else {
+        content = fs.readFileSync(fullPath, 'utf-8')
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ filename, content }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err.message }))
+    }
+    return
+  }
+
+  // List all documents
+  if (req.method === 'GET' && req.url === '/documents') {
+    try {
+      const files = walkDir(DOCS_PATH).map(f => {
+        const stat = fs.statSync(path.join(DOCS_PATH, f))
+        return { name: f, size: stat.size, modified: stat.mtime }
+      })
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ files }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err.message }))
+    }
+    return
+  }
+
+  // Upload a document (multipart/form-data is complex — use raw body with filename header)
+  if (req.method === 'POST' && req.url === '/documents') {
+    const filename = req.headers['x-filename']
+    if (!filename) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Missing X-Filename header' }))
+      return
+    }
+
+    try {
+      const dest = safePath(filename)
+      const dir = path.dirname(dest)
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+
+      const chunks = []
+      req.on('data', chunk => chunks.push(chunk))
+      req.on('end', () => {
+        fs.writeFileSync(dest, Buffer.concat(chunks))
+        console.log(`[api] document uploaded: ${filename}`)
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: true, filename }))
+      })
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err.message }))
+    }
+    return
+  }
+
+  // Delete a document
+  if (req.method === 'DELETE' && req.url.startsWith('/documents/')) {
+    const filename = decodeURIComponent(req.url.slice('/documents/'.length))
+    try {
+      const fullPath = safePath(filename)
+      if (!fs.existsSync(fullPath)) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'File not found' }))
+        return
+      }
+      fs.unlinkSync(fullPath)
+      console.log(`[api] document deleted: ${filename}`)
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: true, filename }))
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err.message }))
     }
     return

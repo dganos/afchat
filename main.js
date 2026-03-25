@@ -1,8 +1,18 @@
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, ipcMain } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 
 let ollamaProcess = null
+let mainWindow = null
+const earlyLogs = []
+
+function sendLog(source, text) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('log', source, text)
+  } else {
+    earlyLogs.push({ source, text })
+  }
+}
 
 function getResourcePath(subpath) {
   return app.isPackaged
@@ -33,8 +43,16 @@ function startOllama() {
       OLLAMA_HOST: '127.0.0.1:11434'
     }
   })
-  ollamaProcess.stdout.on('data', d => console.log('[ollama]', d.toString()))
-  ollamaProcess.stderr.on('data', d => console.log('[ollama]', d.toString()))
+  ollamaProcess.stdout.on('data', d => {
+    const text = d.toString()
+    console.log('[ollama]', text)
+    sendLog('ollama', text)
+  })
+  ollamaProcess.stderr.on('data', d => {
+    const text = d.toString()
+    console.log('[ollama]', text)
+    sendLog('ollama', text)
+  })
 }
 
 app.whenReady().then(async () => {
@@ -42,6 +60,20 @@ app.whenReady().then(async () => {
 
   // Pass documents path to the API server via env
   process.env.DOCS_PATH = getResourcePath('documents')
+
+  // Intercept console to capture API logs
+  const origLog = console.log
+  const origError = console.error
+  console.log = (...args) => {
+    origLog(...args)
+    const text = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
+    if (text.startsWith('[api]')) sendLog('api', text)
+  }
+  console.error = (...args) => {
+    origError(...args)
+    const text = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')
+    if (text.startsWith('[api]')) sendLog('api', text)
+  }
 
   // Start API server
   require('./api/chat.js')
@@ -52,18 +84,27 @@ app.whenReady().then(async () => {
     waitForPort('http://localhost:3001/health')
   ])
 
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1000,
     height: 800,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      webSecurity: false  // Required: allows renderer to call localhost APIs
+      webSecurity: false,  // Required: allows renderer to call localhost APIs
+      preload: path.join(__dirname, 'preload.js')
     }
   })
 
   // Load compiled Next.js static export
-  win.loadFile(path.join(__dirname, 'out/index.html'))
+  mainWindow.loadFile(path.join(__dirname, 'out/index.html'))
+
+  // Flush early logs once page is ready
+  mainWindow.webContents.on('did-finish-load', () => {
+    earlyLogs.forEach(({ source, text }) => {
+      mainWindow.webContents.send('log', source, text)
+    })
+    earlyLogs.length = 0
+  })
 })
 
 app.on('before-quit', () => {
