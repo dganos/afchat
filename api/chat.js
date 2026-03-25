@@ -20,12 +20,19 @@ const ollamaModel = (name) => ollama(name, { simulateStreaming: true })
 
 // ── System Prompt ────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a helpful assistant with access to a document library.
-When answering questions, ALWAYS search the documents first. Never answer from your
-training knowledge alone when the answer could be in the documents. Use listFiles to
-understand what documents exist, searchText to find relevant sections, and readFile to
-read full content. Always cite which document and section your answer comes from.
-If you cannot find the answer in the documents, say so clearly.`
+const SYSTEM_PROMPT = `You are a document-grounded assistant. You MUST ONLY answer based on the documents in your library — NEVER from your own knowledge.
+
+MANDATORY WORKFLOW for every user question:
+1. FIRST call searchText with relevant keywords from the question
+2. If search results are relevant, call readFile to get the full document content
+3. THEN answer using ONLY information found in the documents
+4. Cite the exact document name and section in your answer
+
+CRITICAL RULES:
+- You MUST call at least one tool (searchText or readFile) before answering ANY factual question
+- If you cannot find the answer in the documents, say "I could not find this information in the available documents"
+- NEVER guess, infer, or use your training knowledge — only state what the documents say
+- If the documents say something different from what you "know", the documents are always correct`
 
 // ── Tools ────────────────────────────────────────────────────────────────────
 
@@ -122,6 +129,45 @@ const tools = {
   }
 }
 
+// ── Auto Pre-Search ──────────────────────────────────────────────────────────
+
+// Extract keywords from a user message and search documents automatically
+function autoSearch(userMessage) {
+  // Remove common stop words, keep meaningful terms
+  const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'what', 'which', 'who', 'how', 'when', 'where', 'why', 'do', 'does', 'did', 'can', 'could', 'will', 'would', 'should', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'and', 'or', 'not', 'no', 'my', 'your', 'i', 'me', 'it', 'this', 'that', 'all', 'any', 'about', 'tell', 'give', 'show', 'find', 'get', 'please', 'allowed', 'there'])
+  const words = userMessage.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w))
+
+  if (words.length === 0) return null
+
+  const results = []
+  const files = walkDir(DOCS_PATH)
+  for (const file of files) {
+    const fullPath = path.join(DOCS_PATH, file)
+    const content = fs.readFileSync(fullPath, 'utf-8')
+    const lines = content.split('\n')
+    for (const word of words) {
+      lines.forEach((line, i) => {
+        if (line.toLowerCase().includes(word)) {
+          results.push({ file, line: i + 1, text: line.trim(), keyword: word })
+        }
+      })
+    }
+  }
+
+  if (results.length === 0) return null
+
+  // Deduplicate and limit
+  const seen = new Set()
+  const unique = results.filter(r => {
+    const key = `${r.file}:${r.line}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }).slice(0, 20)
+
+  return unique
+}
+
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 
 const server = http.createServer(async (req, res) => {
@@ -160,10 +206,21 @@ const server = http.createServer(async (req, res) => {
     const lastMsg = body.messages?.[msgCount - 1]
     console.log(`[api] chat request: ${msgCount} messages, last from ${lastMsg?.role}`)
 
+    // Auto pre-search: inject document context if enabled
+    let systemPrompt = SYSTEM_PROMPT
+    if (body.autoSearch && lastMsg?.role === 'user') {
+      const searchResults = autoSearch(lastMsg.content)
+      if (searchResults) {
+        const context = searchResults.map(r => `[${r.file}:${r.line}] ${r.text}`).join('\n')
+        systemPrompt += `\n\nRELEVANT DOCUMENT EXCERPTS (pre-searched for you — use these to answer, and call readFile for full context if needed):\n${context}`
+        console.log(`[api] auto-search injected ${searchResults.length} results`)
+      }
+    }
+
     try {
       const result = streamText({
         model: ollamaModel(currentModel),
-        system: SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: body.messages,
         tools,
         maxSteps: 10  // Allow up to 10 tool call rounds per response

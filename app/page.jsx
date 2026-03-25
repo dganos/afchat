@@ -8,14 +8,38 @@ import { Conversation, ConversationContent, ConversationScrollButton } from '@/c
 import { Message, MessageContent } from '@/components/ai-elements/message'
 import { PromptInput, PromptInputTextarea, PromptInputSubmit } from '@/components/ai-elements/prompt-input'
 import { Tool } from '@/components/ai-elements/tool'
-import { FileQuestion, FolderOpen } from 'lucide-react'
+import { FileQuestion, FolderOpen, Settings2 } from 'lucide-react'
 import { LogsPanel } from '@/components/logs-panel'
 import { DocumentsPanel } from '@/components/documents-panel'
 import { ModelSelector } from '@/components/model-selector'
+import { SettingsPanel } from '@/components/settings-panel'
+
+const DEFAULT_SETTINGS = { autoSearch: false }
+
+function loadSettings() {
+  if (typeof window === 'undefined') return DEFAULT_SETTINGS
+  try {
+    const saved = localStorage.getItem('docassist-settings')
+    return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS
+  } catch { return DEFAULT_SETTINGS }
+}
 
 export default function ChatPage() {
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+
+  useEffect(() => {
+    setSettings(loadSettings())
+  }, [])
+
+  const saveSettings = (next) => {
+    setSettings(next)
+    localStorage.setItem('docassist-settings', JSON.stringify(next))
+  }
+
   const { messages, input, handleInputChange, handleSubmit, status } = useChat({
     api: 'http://localhost:3001/chat',
+    body: { autoSearch: settings.autoSearch },
   })
 
   const [docsOpen, setDocsOpen] = useState(false)
@@ -40,6 +64,12 @@ export default function ChatPage() {
           >
             <FolderOpen className="h-3.5 w-3.5" />
             Documents
+          </button>
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-muted-foreground rounded-md hover:bg-muted transition-colors"
+          >
+            <Settings2 className="h-3.5 w-3.5" />
           </button>
         </div>
       </header>
@@ -114,6 +144,7 @@ export default function ChatPage() {
 
       <LogsPanel />
       <DocumentsPanel open={docsOpen} onClose={() => setDocsOpen(false)} />
+      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} onSettingsChange={saveSettings} />
     </div>
   )
 }
