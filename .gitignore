@@ -6,3 +6,5 @@ out/
 dist/
 .env
 .playwright-mcp/
+.build-cache/
+.build-stash/
