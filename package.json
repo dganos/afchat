@@ -41,6 +41,7 @@
   "build": {
     "appId": "com.124-chat-agent",
     "productName": "124 Chat Agent",
+    "compression": "store",
     "files": [
       "main.js",
       "api/**/*",
