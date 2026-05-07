@@ -8,7 +8,11 @@ const { z } = require('zod')
 const mammoth = require('mammoth')
 const pdfParse = require('pdf-parse')
 
-let currentModel = 'qwen3:1.7b'
+const { selectDefaultModel } = require('./model-selection')
+const { availableMemory } = require('./available-memory')
+
+// Auto-select default model based on available RAM
+let currentModel = selectDefaultModel(os.totalmem())
 const DOCS_PATH = process.env.DOCS_PATH || path.join(__dirname, '../resources/documents')
 const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
 // ollama-ai-provider v1.2.0 streaming doesn't parse tool_calls from Ollama's
@@ -250,7 +254,7 @@ const server = http.createServer(async (req, res) => {
       const data = await ollamaRes.json()
 
       const totalRAM = os.totalmem()
-      const freeRAM = os.freemem()
+      const freeRAM = availableMemory()
 
       const models = (data.models || []).map(m => ({
         name: m.name,
@@ -294,7 +298,7 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
-    const freeRAM = os.freemem()
+    const freeRAM = availableMemory()
 
     // Check if model exists in Ollama
     try {
@@ -439,3 +443,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(3001, () => {
   console.log('[api] listening on http://localhost:3001')
 })
+
+module.exports = { server }
