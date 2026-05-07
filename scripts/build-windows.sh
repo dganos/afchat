@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# Build a Windows x64 portable zip of 124 Chat Agent on macOS.
+# Build Windows x64 portable bundles of 124 Chat Agent on macOS.
 #
-# Output: dist/124-Chat-Agent-Windows.zip
-# Usage:  ./scripts/build-windows.sh           # incremental — skip if up-to-date
-#         BUILD_FORCE=1 ./scripts/build-windows.sh   # force rebuild
+# Outputs (split so model changes don't force re-uploading the whole bundle):
+#   dist/124-Chat-Agent-Windows-app.zip      ~800 MB  (code + Electron + ollama runtime)
+#   dist/124-Chat-Agent-Windows-models.zip   ~3.6 GB  (resources/models only)
+#
+# On Windows, extract BOTH zips to the same folder. They merge cleanly because
+# they don't share any files — only the empty parent dirs overlap.
+#
+# Usage:  ./scripts/build-windows.sh           # incremental
+#         BUILD_FORCE=1 ./scripts/build-windows.sh   # force rebuild of both
 #
 # Hash-based cache:
-#   - Hashes all build inputs (source, configs, kept model manifests, this script)
-#   - Stores result in .build-cache/win-zip.sha256
-#   - Skips the entire build if the hash matches the previous successful build
-#   - Override with BUILD_FORCE=1 or by deleting the cache file
+#   - Two independent hashes: app inputs vs model manifests
+#   - Stored in .build-cache/win-app.sha256 and win-models.sha256
+#   - Re-zips only the portion(s) whose inputs changed
+#   - Failed builds leave previous hashes intact
 
 set -euo pipefail
 
@@ -18,20 +24,28 @@ cd "$ROOT"
 
 STASH="$ROOT/.build-stash"
 CACHE_DIR="$ROOT/.build-cache"
-HASH_FILE="$CACHE_DIR/win-zip.sha256"
-OLLAMA_ZIP="${TMPDIR:-/tmp}/ollama-win.zip"
+APP_HASH_FILE="$CACHE_DIR/win-app.sha256"
+MODELS_HASH_FILE="$CACHE_DIR/win-models.sha256"
+
+# Ollama runtime cache lives under .build-cache so macOS doesn't clean it
+# (vs $TMPDIR which differs from /tmp and can be auto-purged).
+OLLAMA_ZIP="$CACHE_DIR/ollama-win.zip"
 OLLAMA_URL="https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
+
 EXCLUDE_FAMILY="gemma4"   # model family to leave out of the build
-OUTPUT_ZIP="$ROOT/dist/124-Chat-Agent-Windows.zip"
+APP_ZIP="$ROOT/dist/124-Chat-Agent-Windows-app.zip"
+MODELS_ZIP="$ROOT/dist/124-Chat-Agent-Windows-models.zip"
 SCRIPT_PATH="scripts/build-windows.sh"
 
 [[ "$(uname)" == "Darwin" ]] || { echo "ERROR: this script must run on macOS." >&2; exit 1; }
+mkdir -p "$CACHE_DIR"
 
-# ── Hash all build inputs ────────────────────────────────────────────────────
-# Ollama blobs are content-addressed (sha256 in filename), so hashing the
-# manifests captures any model-content change. We don't hash the blob files
-# themselves — that would mean re-reading 4 GB on every script run.
-compute_input_hash() {
+# ── Hashes ───────────────────────────────────────────────────────────────────
+# Model blobs are content-addressed (sha256 in filename), so manifests capture
+# any content change without rereading the blobs themselves.
+hash_files() { sort -u | tr '\n' '\0' | xargs -0 shasum -a 256 2>/dev/null | sort | shasum -a 256 | awk '{print $1}'; }
+
+compute_app_hash() {
   local paths=(
     main.js preload.js
     api app components lib
@@ -44,31 +58,44 @@ compute_input_hash() {
   local existing=()
   local p
   for p in "${paths[@]}"; do [[ -e "$p" ]] && existing+=("$p"); done
-
-  {
-    [[ ${#existing[@]} -gt 0 ]] && find "${existing[@]}" -type f
-    find resources/models/manifests -type f -not -path "*/$EXCLUDE_FAMILY/*"
-  } 2>/dev/null \
-    | sort -u \
-    | tr '\n' '\0' \
-    | xargs -0 shasum -a 256 2>/dev/null \
-    | sort \
-    | shasum -a 256 \
-    | awk '{print $1}'
+  [[ ${#existing[@]} -gt 0 ]] || { echo "EMPTY"; return; }
+  find "${existing[@]}" -type f 2>/dev/null | hash_files
 }
 
-mkdir -p "$CACHE_DIR"
-INPUT_HASH=$(compute_input_hash)
+compute_models_hash() {
+  find resources/models/manifests -type f -not -path "*/$EXCLUDE_FAMILY/*" 2>/dev/null | hash_files
+}
+
+APP_HASH=$(compute_app_hash)
+MODELS_HASH=$(compute_models_hash)
+
+is_fresh() {
+  local hash_file=$1 expected=$2 zip=$3
+  [[ -f "$hash_file" && -f "$zip" && "$expected" == "$(cat "$hash_file")" ]]
+}
+
+APP_FRESH=false
+MODELS_FRESH=false
+is_fresh "$APP_HASH_FILE"    "$APP_HASH"    "$APP_ZIP"    && APP_FRESH=true
+is_fresh "$MODELS_HASH_FILE" "$MODELS_HASH" "$MODELS_ZIP" && MODELS_FRESH=true
 
 if [[ "${BUILD_FORCE:-}" == "1" ]]; then
-  echo "==> BUILD_FORCE=1 — skipping cache check"
-elif [[ -f "$HASH_FILE" && -f "$OUTPUT_ZIP" && "$INPUT_HASH" == "$(cat "$HASH_FILE")" ]]; then
-  size=$(du -sh "$OUTPUT_ZIP" | cut -f1)
-  echo "✓ $OUTPUT_ZIP is up-to-date  ($size)"
-  echo "  Inputs unchanged since last build (hash: ${INPUT_HASH:0:12}…)"
+  echo "==> BUILD_FORCE=1 — forcing both rebuilds"
+  APP_FRESH=false
+  MODELS_FRESH=false
+fi
+
+if [[ "$APP_FRESH" == "true" && "$MODELS_FRESH" == "true" ]]; then
+  echo "✓ Both bundles up-to-date"
+  printf "    %s  (%s)\n" "$APP_ZIP"    "$(du -sh "$APP_ZIP"    | cut -f1)"
+  printf "    %s  (%s)\n" "$MODELS_ZIP" "$(du -sh "$MODELS_ZIP" | cut -f1)"
   echo "  Force rebuild with: BUILD_FORCE=1 $0"
   exit 0
 fi
+
+echo "==> Build plan:"
+echo "    app    zip: $([ "$APP_FRESH"    = "true" ] && echo "skip (fresh)" || echo "REBUILD")"
+echo "    models zip: $([ "$MODELS_FRESH" = "true" ] && echo "skip (fresh)" || echo "REBUILD")"
 
 # ── Cleanup on exit ──────────────────────────────────────────────────────────
 restore() {
@@ -90,11 +117,7 @@ restore() {
   rm -f resources/ollama/ollama.exe resources/ollama/vc_redist.x64.exe
   rm -rf resources/ollama/lib
   rm -rf "$STASH"
-  if [[ $code -eq 0 ]]; then
-    echo "    done"
-  else
-    echo "    done (build failed with exit $code)"
-  fi
+  if [[ $code -eq 0 ]]; then echo "    done"; else echo "    done (build failed with exit $code)"; fi
 }
 trap restore EXIT
 
@@ -104,7 +127,7 @@ if (( free_gb < 15 )); then
   echo "WARNING: only ${free_gb} GB free. Build needs ~15 GB headroom." >&2
 fi
 
-# ── 1. Stash gemma4 models ───────────────────────────────────────────────────
+# ── 1. Stash gemma4 models + Mac ollama ──────────────────────────────────────
 echo "==> [1/5] Stashing $EXCLUDE_FAMILY models"
 mkdir -p "$STASH/manifests/$EXCLUDE_FAMILY" "$STASH/blobs"
 
@@ -151,23 +174,31 @@ rm -rf dist
 npx next build >/dev/null 2>&1
 npx electron-builder --win --x64 --dir 2>&1 | grep -E "•|warning|error" || true
 
-if [[ ! -d dist/win-unpacked ]]; then
-  echo "ERROR: dist/win-unpacked was not produced." >&2
-  exit 1
+[[ -d dist/win-unpacked ]] || { echo "ERROR: dist/win-unpacked was not produced." >&2; exit 1; }
+
+# ── 4. Zip selectively ───────────────────────────────────────────────────────
+echo "==> [5/5] Creating zip(s)"
+
+if [[ "$APP_FRESH" != "true" ]]; then
+  echo "    app zip..."
+  rm -f "$APP_ZIP"
+  ( cd dist && zip -r0 -q "$(basename "$APP_ZIP")" win-unpacked -x "win-unpacked/resources/models/*" )
+  echo "$APP_HASH" > "$APP_HASH_FILE"
+  echo "      $(du -sh "$APP_ZIP" | cut -f1)"
 fi
 
-# ── 4. Zip it up ─────────────────────────────────────────────────────────────
-echo "==> [5/5] Creating zip"
-( cd dist && zip -r0 -q "$(basename "$OUTPUT_ZIP")" win-unpacked )
+if [[ "$MODELS_FRESH" != "true" ]]; then
+  echo "    models zip..."
+  rm -f "$MODELS_ZIP"
+  ( cd dist && zip -r0 -q "$(basename "$MODELS_ZIP")" win-unpacked/resources/models )
+  echo "$MODELS_HASH" > "$MODELS_HASH_FILE"
+  echo "      $(du -sh "$MODELS_ZIP" | cut -f1)"
+fi
 
-# Persist the input hash only on success — a failed build leaves the previous
-# hash intact so the next run still rebuilds.
-echo "$INPUT_HASH" > "$HASH_FILE"
-
-size=$(du -sh "$OUTPUT_ZIP" | cut -f1)
 echo
 echo "✓ Build complete"
-echo "  $OUTPUT_ZIP  ($size)"
-echo "  cache hash: ${INPUT_HASH:0:12}…"
+[[ -f "$APP_ZIP"    ]] && echo "  $APP_ZIP    ($(du -sh "$APP_ZIP"    | cut -f1))"
+[[ -f "$MODELS_ZIP" ]] && echo "  $MODELS_ZIP ($(du -sh "$MODELS_ZIP" | cut -f1))"
 echo
-echo "On Windows: extract the zip, run 124 Chat Agent.exe inside."
+echo "On Windows: extract BOTH zips into the same folder, then run"
+echo "            win-unpacked/124 Chat Agent.exe"

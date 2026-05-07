@@ -11,8 +11,24 @@ const pdfParse = require('pdf-parse')
 const { selectDefaultModel } = require('./model-selection')
 const { availableMemory } = require('./available-memory')
 
-// Auto-select default model based on available RAM
-let currentModel = selectDefaultModel(os.totalmem())
+// Default model is resolved lazily on the first request — Ollama may not be
+// up yet when this module loads, and we want to pick from actually-installed
+// models rather than a hardcoded name.
+let currentModel = null
+
+async function ensureCurrentModel() {
+  if (currentModel) return currentModel
+  try {
+    const res = await fetch('http://localhost:11434/api/tags')
+    const data = await res.json()
+    currentModel = selectDefaultModel(os.totalmem(), data.models || [])
+    if (currentModel) console.log(`[api] auto-selected model: ${currentModel}`)
+    else console.warn('[api] no models installed — UI must pick one')
+  } catch (err) {
+    console.error('[api] could not auto-select model:', err.message)
+  }
+  return currentModel
+}
 const DOCS_PATH = process.env.DOCS_PATH || path.join(__dirname, '../resources/documents')
 const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
 // ollama-ai-provider v1.2.0 streaming doesn't parse tool_calls from Ollama's
@@ -196,6 +212,12 @@ const server = http.createServer(async (req, res) => {
   console.log(`[api] ${req.method} ${req.url}`)
 
   if (req.method === 'POST' && req.url === '/chat') {
+    await ensureCurrentModel()
+    if (!currentModel) {
+      res.writeHead(503, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'No models installed. Pull one with `ollama pull <model>`.' }))
+      return
+    }
     // Parse request body
     const body = await new Promise((resolve, reject) => {
       let data = ''
@@ -249,6 +271,7 @@ const server = http.createServer(async (req, res) => {
 
   // List available models with RAM info
   if (req.method === 'GET' && req.url === '/models') {
+    await ensureCurrentModel()
     try {
       const [tagsRes, psRes] = await Promise.all([
         fetch('http://localhost:11434/api/tags'),
