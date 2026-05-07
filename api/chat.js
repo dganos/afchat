@@ -250,11 +250,20 @@ const server = http.createServer(async (req, res) => {
   // List available models with RAM info
   if (req.method === 'GET' && req.url === '/models') {
     try {
-      const ollamaRes = await fetch('http://localhost:11434/api/tags')
-      const data = await ollamaRes.json()
+      const [tagsRes, psRes] = await Promise.all([
+        fetch('http://localhost:11434/api/tags'),
+        fetch('http://localhost:11434/api/ps').catch(() => null),
+      ])
+      const data = await tagsRes.json()
+      const psData = psRes ? await psRes.json().catch(() => ({ models: [] })) : { models: [] }
+      const loadedByName = new Map((psData.models || []).map(m => [m.name, m.size || 0]))
+      const loadedTotal = Array.from(loadedByName.values()).reduce((a, b) => a + b, 0)
 
       const totalRAM = os.totalmem()
       const freeRAM = availableMemory()
+      // Loaded models would be evicted on switch, so add them back when checking fit.
+      // For a model that's already loaded, exclude only its own size.
+      const effectiveFreeFor = (m) => freeRAM + loadedTotal - (loadedByName.get(m.name) || 0)
 
       const models = (data.models || []).map(m => ({
         name: m.name,
@@ -262,7 +271,7 @@ const server = http.createServer(async (req, res) => {
         parameterSize: m.details?.parameter_size || null,
         quantization: m.details?.quantization_level || null,
         family: m.details?.family || null,
-        fitsInRAM: m.size < freeRAM * 0.9,
+        fitsInRAM: m.size < effectiveFreeFor(m) * 0.9,
       }))
 
       res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -272,6 +281,7 @@ const server = http.createServer(async (req, res) => {
         memory: {
           total: totalRAM,
           free: freeRAM,
+          loaded: loadedTotal,
         }
       }))
     } catch (err) {
@@ -302,8 +312,12 @@ const server = http.createServer(async (req, res) => {
 
     // Check if model exists in Ollama
     try {
-      const ollamaRes = await fetch('http://localhost:11434/api/tags')
-      const data = await ollamaRes.json()
+      const [tagsRes, psRes] = await Promise.all([
+        fetch('http://localhost:11434/api/tags'),
+        fetch('http://localhost:11434/api/ps').catch(() => null),
+      ])
+      const data = await tagsRes.json()
+      const psData = psRes ? await psRes.json().catch(() => ({ models: [] })) : { models: [] }
       const match = (data.models || []).find(m => m.name === body.model)
 
       if (!match) {
@@ -312,13 +326,19 @@ const server = http.createServer(async (req, res) => {
         return
       }
 
-      const fitsInRAM = match.size < freeRAM * 0.9
+      // Models other than the requested one would be evicted when this one loads.
+      const evictableSize = (psData.models || [])
+        .filter(m => m.name !== body.model)
+        .reduce((a, m) => a + (m.size || 0), 0)
+      const effectiveFree = freeRAM + evictableSize
+
+      const fitsInRAM = match.size < effectiveFree * 0.9
       if (!fitsInRAM) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({
           error: 'Model does not fit in available RAM',
           modelSize: match.size,
-          freeRAM
+          freeRAM: effectiveFree
         }))
         return
       }
