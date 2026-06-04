@@ -1,0 +1,57 @@
+# afchat_lab experiment configuration
+# Goal: find the best local open-source model for QA over documents.
+
+paths:
+  corpus_dir: corpus
+  testset: testset/questions.json
+  results_dir: results
+  # Reuse the filesystem MCP server already configured in LM Studio.
+  # The harness reads this file, takes the "filesystem" server definition,
+  # and points it at corpus_dir (read-only). We do NOT write our own MCP server.
+  lmstudio_mcp_json: ~/.lmstudio/mcp.json
+  mcp_server_name: filesystem
+
+lmstudio:
+  base_url: http://localhost:1234/v1
+  api_key: lm-studio          # LM Studio ignores the value, but the SDK needs one
+  request_timeout_s: 180
+  # If true, the runner loads/unloads each model via the `lms` CLI before/after its run.
+  manage_models: true
+  context_length: 8192        # load context window; bigger = more RAM. Tune for 8 GB targets.
+
+agent:
+  max_steps: 8                # max tool-use turns before forcing a final answer
+  temperature: 0
+  max_tool_result_chars: 6000 # truncate tool output to protect small context windows
+  # Read-only subset of the filesystem server's tools we expose to the candidate.
+  tool_allowlist:
+    - list_directory
+    - read_text_file
+    - search_files
+
+judge:
+  # Claude Agent SDK is the only judge. No Claude, no test (the run preflights and
+  # aborts if it can't be reached). There is no fallback grader.
+  model: claude-sonnet-4-6
+
+# Candidate models under test (identifiers from `lms ls`).
+models:
+  - id: nvidia/nemotron-3-nano-4b
+    label: nemotron-4b
+  - id: google/gemma-4-e2b
+    label: gemma-4-e2b
+  - id: google/gemma-4-e4b
+    label: gemma-4-e4b
+  - id: dictalm2.0-instruct
+    label: dictalm2-7b
+  - id: dictalm-3.0-1.7b-thinking
+    label: dictalm3-1.7b
+  - id: gemma-4-12b-it
+    label: gemma-4-12b-iq2m
+    # 12B UD-IQ2_M (~4.4 GB). On an 8 GB box the weights load but the Metal
+    # compute buffer OOMs at full offload — partial CPU offload + a smaller
+    # context is required to load AND run inference. Vision/audio projector
+    # (mmproj, type "gemma4uv") is unsupported by the installed runtime and is
+    # disabled in the model folder; the lab is text-only anyway.
+    gpu: 0.4
+    context_length: 4096

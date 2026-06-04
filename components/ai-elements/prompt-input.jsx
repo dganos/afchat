@@ -19,10 +19,13 @@ export function PromptInputTextarea({ value, onChange, placeholder = 'Ask about 
 
   React.useEffect(() => {
     const textarea = textareaRef.current
-    if (textarea) {
-      textarea.style.height = 'auto'
-      textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px'
-    }
+    if (!textarea) return
+    const style = getComputedStyle(textarea)
+    const lineHeight = parseFloat(style.lineHeight) || 20
+    const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+    const maxHeight = lineHeight * 3 + padY
+    textarea.style.height = 'auto'
+    textarea.style.height = Math.min(textarea.scrollHeight, maxHeight) + 'px'
   }, [value])
 
   React.useEffect(() => {
@@ -49,6 +52,7 @@ export function PromptInputTextarea({ value, onChange, placeholder = 'Ask about 
         'flex-1 resize-none bg-transparent text-sm placeholder:text-muted-foreground',
         'border rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring',
         'disabled:opacity-50 disabled:cursor-not-allowed',
+        '[scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
         className
       )}
     />

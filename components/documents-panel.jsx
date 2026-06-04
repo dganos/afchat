@@ -45,7 +45,7 @@ export function DocumentsPanel({ open, onClose }) {
         const body = await file.arrayBuffer()
         await fetch(`${API}/documents`, {
           method: 'POST',
-          headers: { 'X-Filename': file.name },
+          headers: { 'X-Filename': encodeURIComponent(file.name) },
           body
         })
       } catch (err) {

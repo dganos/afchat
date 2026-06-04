@@ -9,3 +9,9 @@ dist/
 .playwright-mcp/
 .build-cache/
 .build-stash/
+scripts/.venv/
+
+# Lab is tracked; only generated run artifacts are ignored
+afchat_lab/results/
+afchat_lab/.venv/
+afchat_lab/**/__pycache__/

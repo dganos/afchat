@@ -2,7 +2,8 @@ import './globals.css'
 import 'streamdown/styles.css'
 
 export const metadata = {
-  title: '124 Chat Agent',
+  title: 'Aristo',
+  icons: { icon: '/aristo-logo.png' },
 }
 
 export default function RootLayout({ children }) {

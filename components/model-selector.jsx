@@ -12,6 +12,14 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
+// Rough load-time estimate based on observed M2 behavior: ~1.7s per GiB of
+// weights, plus a small fixed cost for runner spin-up. Used only to pace the
+// progress bar — it snaps to 100% as soon as the server confirms the load.
+function estimateLoadMs(sizeBytes) {
+  const gib = sizeBytes / (1024 ** 3)
+  return Math.max(1500, Math.round(1500 + gib * 2000))
+}
+
 export function ModelSelector({ onModelChange }) {
   const [open, setOpen] = useState(false)
   const [models, setModels] = useState([])
@@ -19,8 +27,10 @@ export function ModelSelector({ onModelChange }) {
   const [memory, setMemory] = useState(null)
   const [loading, setLoading] = useState(false)
   const [switching, setSwitching] = useState(null)
+  const [loadProgress, setLoadProgress] = useState(0)
   const [error, setError] = useState(null)
   const ref = useRef(null)
+  const progressTimerRef = useRef(null)
 
   const fetchModels = async () => {
     setLoading(true)
@@ -49,8 +59,23 @@ export function ModelSelector({ onModelChange }) {
   }, [])
 
   const selectModel = async (name) => {
+    if (switching) return
+    const target = models.find(m => m.name === name)
     setSwitching(name)
     setError(null)
+    setLoadProgress(0)
+
+    // Animate progress toward 95% over the estimated load duration. The
+    // remaining 5% is reserved for the server confirmation so the bar
+    // doesn't sit at 100% before it's actually safe to chat.
+    const expectedMs = target ? estimateLoadMs(target.size) : 6000
+    const start = Date.now()
+    progressTimerRef.current = setInterval(() => {
+      const elapsed = Date.now() - start
+      const pct = Math.min(95, (elapsed / expectedMs) * 95)
+      setLoadProgress(pct)
+    }, 80)
+
     try {
       const res = await fetch(`${API}/models/select`, {
         method: 'POST',
@@ -58,19 +83,31 @@ export function ModelSelector({ onModelChange }) {
         body: JSON.stringify({ model: name })
       })
       const data = await res.json()
+      clearInterval(progressTimerRef.current)
       if (data.error) {
+        setLoadProgress(0)
         setError({ model: name, message: data.error, modelSize: data.modelSize, freeRAM: data.freeRAM })
       } else if (data.success) {
+        setLoadProgress(100)
         setCurrentModel(name)
-        setOpen(false)
         setError(null)
         if (onModelChange) onModelChange(name)
+        // Brief pause so the user sees the bar complete, then collapse.
+        setTimeout(() => {
+          setOpen(false)
+          setLoadProgress(0)
+          fetchModels()  // refresh memory/free-RAM numbers
+        }, 350)
       }
     } catch (err) {
+      clearInterval(progressTimerRef.current)
+      setLoadProgress(0)
       setError({ model: name, message: err.message })
     }
     setSwitching(null)
   }
+
+  useEffect(() => () => clearInterval(progressTimerRef.current), [])
 
   return (
     <div ref={ref} className="relative">
@@ -93,6 +130,24 @@ export function ModelSelector({ onModelChange }) {
             </div>
           )}
 
+          {/* Load progress */}
+          {switching && (
+            <div className="px-3 py-2.5 border-b bg-muted/20">
+              <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-1.5">
+                <span className="truncate pr-2">
+                  Loading <span className="text-foreground font-medium">{switching}</span>…
+                </span>
+                <span className="tabular-nums">{Math.round(loadProgress)}%</span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-[width] duration-100 ease-out"
+                  style={{ width: `${loadProgress}%` }}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Model list */}
           <div className="max-h-64 overflow-y-auto">
             {loading ? (
@@ -107,7 +162,7 @@ export function ModelSelector({ onModelChange }) {
                 <button
                   key={m.name}
                   onClick={() => selectModel(m.name)}
-                  disabled={switching === m.name || !m.fitsInRAM}
+                  disabled={!!switching || !m.fitsInRAM}
                   className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {/* Active indicator */}
@@ -119,7 +174,6 @@ export function ModelSelector({ onModelChange }) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="text-sm font-medium truncate">{m.name}</span>
-                      {switching === m.name && <HelicopterLoader className="h-4 w-4" />}
                     </div>
                     <div className="flex gap-2 text-[11px] text-muted-foreground">
                       <span>{formatBytes(m.size)}</span>

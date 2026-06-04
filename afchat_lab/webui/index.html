@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>afchat_lab // doc-qa benchmark</title>
+<style>
+  :root{
+    --bg:#0a0b0e; --panel:#101319; --panel2:#0d1015; --line:#1b2029; --line2:#272d39;
+    --txt:#e7ebf2; --dim:#79808d; --dim2:#4d535e;
+    --amber:#ffb454; --amber-d:#f0972a; --lime:#8be34d; --red:#ff6b6b; --cyan:#57c7ff; --violet:#b48cff;
+    --mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --disp:"Futura","Avenir Next Condensed","Avenir Next",sans-serif;
+    --body:"Avenir Next","Helvetica Neue",-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--txt); font-family:var(--body); font-size:14px;
+    background-image:
+      linear-gradient(var(--line) 1px,transparent 1px),
+      linear-gradient(90deg,var(--line) 1px,transparent 1px),
+      radial-gradient(120% 90% at 80% -10%, rgba(255,180,84,.06), transparent 60%);
+    background-size:34px 34px,34px 34px,100% 100%;
+    background-position:center top;
+  }
+  body::after{ /* faint vignette + grain feel */
+    content:"";position:fixed;inset:0;pointer-events:none;z-index:1;
+    background:radial-gradient(120% 120% at 50% 30%,transparent 60%,rgba(0,0,0,.55));
+  }
+  .wrap{position:relative;z-index:2;max-width:1320px;margin:0 auto;padding:0 22px 60px}
+
+  /* ---------- header ---------- */
+  header{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;
+    padding:26px 0 16px;border-bottom:1px solid var(--line2)}
+  .brand{display:flex;flex-direction:column;gap:4px}
+  .brand h1{font-family:var(--disp);font-weight:600;font-size:30px;letter-spacing:.14em;
+    margin:0;text-transform:uppercase;color:var(--txt)}
+  .brand h1 b{color:var(--amber);font-weight:600}
+  .brand .sub{font-family:var(--mono);font-size:11px;letter-spacing:.18em;color:var(--dim);text-transform:uppercase}
+  .stats{display:flex;gap:10px;font-family:var(--mono);font-size:11px}
+  .pill{border:1px solid var(--line2);background:var(--panel);padding:7px 11px;
+    display:flex;gap:8px;align-items:center;letter-spacing:.06em}
+  .pill .k{color:var(--dim2);text-transform:uppercase}
+  .pill .v{color:var(--txt)}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--dim2);box-shadow:0 0 0 0 rgba(0,0,0,0)}
+  .dot.on{background:var(--lime);box-shadow:0 0 8px var(--lime)}
+  .dot.run{background:var(--amber);box-shadow:0 0 8px var(--amber);animation:pulse 1s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+
+  /* ---------- tabs ---------- */
+  nav{display:flex;gap:2px;margin:18px 0 22px}
+  nav button{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    background:transparent;color:var(--dim);border:1px solid transparent;border-bottom:1px solid var(--line2);
+    padding:11px 18px;cursor:pointer;transition:.15s}
+  nav button:hover{color:var(--txt)}
+  nav button.active{color:var(--bg);background:var(--amber);border-color:var(--amber)}
+
+  .panel{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line2)}
+  .panel-h{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--dim);padding:12px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+  .panel-h .tag{color:var(--amber)}
+
+  /* ---------- control ---------- */
+  .grid2{display:grid;grid-template-columns:380px 1fr;gap:18px}
+  .form{padding:16px}
+  .field{margin-bottom:20px}
+  .field>label{display:block;font-family:var(--mono);font-size:11px;letter-spacing:.14em;
+    text-transform:uppercase;color:var(--dim);margin-bottom:9px}
+  .models{display:flex;flex-direction:column;gap:7px}
+  .mrow{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--line);
+    background:#0b0e13;cursor:pointer;transition:.12s;font-family:var(--mono);font-size:12.5px}
+  .mrow:hover{border-color:var(--line2)}
+  .mrow.sel{border-color:var(--amber);background:rgba(255,180,84,.06)}
+  .mrow .box{width:14px;height:14px;border:1px solid var(--dim2);display:grid;place-items:center;flex:0 0 auto}
+  .mrow.sel .box{border-color:var(--amber);background:var(--amber);color:#000}
+  .mrow .box svg{width:10px;height:10px;display:none}
+  .mrow.sel .box svg{display:block}
+  .mrow .id{color:var(--dim);margin-left:auto;font-size:10.5px}
+  .opts{display:flex;flex-wrap:wrap;gap:8px}
+  .opt{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--dim);
+    border:1px solid var(--line);padding:8px 11px;cursor:pointer;user-select:none}
+  .opt.on{color:var(--txt);border-color:var(--cyan)}
+  .opt .sw{width:26px;height:14px;border-radius:8px;background:var(--line2);position:relative;transition:.15s}
+  .opt.on .sw{background:var(--cyan)}
+  .opt .sw::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;
+    background:#fff;transition:.15s}
+  .opt.on .sw::after{left:14px}
+  input[type=number]{width:80px;background:#0b0e13;border:1px solid var(--line2);color:var(--txt);
+    font-family:var(--mono);padding:8px 10px}
+  .judgebox{font-family:var(--mono);font-size:12px;color:var(--dim);border:1px solid var(--violet);
+    background:rgba(180,140,255,.07);padding:11px 13px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .judgebox b{color:var(--violet)}
+  .judgebox .note{color:var(--dim2);font-size:10px;letter-spacing:.08em;text-transform:uppercase;margin-left:auto}
+  .launch{width:100%;font-family:var(--disp);letter-spacing:.18em;text-transform:uppercase;font-size:16px;
+    background:var(--amber);color:#0a0b0e;border:none;padding:15px;cursor:pointer;font-weight:600;transition:.15s}
+  .launch:hover{background:#ffc274}
+  .launch:disabled{background:var(--line2);color:var(--dim);cursor:not-allowed}
+  .runbtns{display:flex;gap:10px}
+  .runbtns .launch{flex:1}
+  .stop{font-family:var(--disp);letter-spacing:.16em;text-transform:uppercase;font-size:14px;
+    background:transparent;color:var(--red);border:1px solid var(--red);padding:15px 20px;cursor:pointer;transition:.15s}
+  .stop:hover:not(:disabled){background:var(--red);color:#0a0b0e}
+  .stop:disabled{border-color:var(--line2);color:var(--dim2);cursor:not-allowed}
+  .hint{font-family:var(--mono);font-size:10.5px;color:var(--dim2);margin-top:9px;line-height:1.5}
+
+  /* ---------- console ---------- */
+  .console{font-family:var(--mono);font-size:12px;line-height:1.65;padding:14px 16px;height:560px;
+    overflow:auto;background:#070809;white-space:pre-wrap;word-break:break-word}
+  .console .h{color:var(--amber);font-weight:600}
+  .console .hdr{color:var(--amber);font-weight:600}
+  .console .cmd{color:var(--violet)}
+  .console .q{color:var(--cyan)}
+  .console .a{color:var(--txt)}
+  .console .tool{color:#6aa0c0}
+  .console .think{color:var(--dim2);font-style:italic}
+  .console .ok{color:var(--lime)}
+  .console .bad{color:var(--red)}
+  .console .par{color:var(--amber-d)}
+  .console .dim{color:var(--dim)}
+  .console::-webkit-scrollbar{width:9px}
+  .console::-webkit-scrollbar-thumb{background:var(--line2)}
+
+  /* ---------- leaderboard ---------- */
+  .bar-row{display:grid;grid-template-columns:42px 150px 1fr 88px 120px 70px;gap:14px;align-items:center;
+    padding:15px 18px;border-bottom:1px solid var(--line)}
+  .bar-row:last-child{border-bottom:none}
+  .rank{font-family:var(--disp);font-size:26px;color:var(--dim2);text-align:center}
+  .bar-row.first .rank{color:var(--amber)}
+  .mname{font-family:var(--mono);font-size:13px;color:var(--txt)}
+  .mname small{display:block;color:var(--dim2);font-size:10px;margin-top:2px}
+  .track{height:12px;background:#0b0e13;border:1px solid var(--line2);position:relative;overflow:hidden}
+  .fill{height:100%;background:linear-gradient(90deg,var(--amber-d),var(--amber));transition:width .9s cubic-bezier(.2,.9,.2,1)}
+  .pct{font-family:var(--disp);font-size:24px;text-align:right;color:var(--txt)}
+  .pct small{font-size:12px;color:var(--dim)}
+  .chips{display:flex;gap:6px;font-family:var(--mono);font-size:11px}
+  .chip{padding:3px 7px;border:1px solid var(--line2)}
+  .chip.c{color:var(--lime)} .chip.p{color:var(--amber-d)} .chip.x{color:var(--red)}
+  .steps{font-family:var(--mono);font-size:11px;color:var(--dim);text-align:right}
+
+  .selectbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  select{background:#0b0e13;border:1px solid var(--line2);color:var(--txt);font-family:var(--mono);
+    font-size:12px;padding:9px 11px}
+  .empty{padding:60px 20px;text-align:center;color:var(--dim);font-family:var(--mono);font-size:12px}
+
+  /* ---------- questions ---------- */
+  .qfilters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+  .qrow{border:1px solid var(--line);border-left-width:3px;margin-bottom:7px;background:var(--panel)}
+  .qrow.c{border-left-color:var(--lime)} .qrow.p{border-left-color:var(--amber-d)} .qrow.x{border-left-color:var(--red)}
+  .qhead{display:grid;grid-template-columns:54px 120px 1fr 90px 60px;gap:12px;align-items:center;
+    padding:11px 14px;cursor:pointer;font-family:var(--mono);font-size:12px}
+  .qhead:hover{background:#0d1116}
+  .qhead .qid{color:var(--amber)}
+  .qhead .qm{color:var(--dim)}
+  .qhead .qq{color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .qhead .qv{text-align:right;text-transform:uppercase;letter-spacing:.08em}
+  .qv.c{color:var(--lime)} .qv.p{color:var(--amber-d)} .qv.x{color:var(--red)}
+  .qhead .qs{color:var(--dim);text-align:right}
+  .qbody{display:none;padding:0 14px 16px;border-top:1px solid var(--line)}
+  .qrow.open .qbody{display:block}
+  .qbody dl{display:grid;grid-template-columns:120px 1fr;gap:8px 16px;margin:14px 0 0;font-size:13px}
+  .qbody dt{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  .qbody dd{margin:0;line-height:1.55}
+  .qbody .ans{font-family:var(--mono);font-size:12.5px;background:#070809;border:1px solid var(--line);
+    padding:11px 13px;white-space:pre-wrap;word-break:break-word}
+  .qbody .ref{color:var(--lime)}
+
+  /* ---------- corpus ---------- */
+  .corp{display:grid;grid-template-columns:300px 1fr;gap:18px}
+  .doclist{display:flex;flex-direction:column}
+  .docitem{padding:13px 16px;border-bottom:1px solid var(--line);cursor:pointer;transition:.12s}
+  .docitem:hover{background:#0d1116}
+  .docitem.sel{background:rgba(255,180,84,.07);border-left:3px solid var(--amber)}
+  .docitem .t{font-family:var(--mono);font-size:12.5px;color:var(--txt)}
+  .docitem .m{font-family:var(--mono);font-size:10px;color:var(--dim2);margin-top:3px}
+  .docview{padding:22px 26px;height:640px;overflow:auto;line-height:1.7}
+  .docview h1{font-family:var(--disp);letter-spacing:.06em;font-size:26px;color:var(--amber);margin:.2em 0 .6em}
+  .docview h2{font-family:var(--mono);font-size:13px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--cyan);border-bottom:1px solid var(--line);padding-bottom:6px;margin:1.6em 0 .7em}
+  .docview h3{font-family:var(--body);font-size:15px;color:var(--txt);margin:1.1em 0 .4em}
+  .docview p,.docview li{color:#cdd3dd;font-size:13.5px}
+  .docview table{border-collapse:collapse;width:100%;margin:1em 0;font-family:var(--mono);font-size:11.5px}
+  .docview th,.docview td{border:1px solid var(--line2);padding:6px 9px;text-align:left}
+  .docview th{background:#0d1116;color:var(--amber-d)}
+  .docview code{font-family:var(--mono);color:var(--amber)}
+  .docview strong{color:var(--txt)}
+  .hidden{display:none}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:50;
+    font-family:var(--mono);font-size:12px;background:var(--panel);border:1px solid var(--amber);
+    color:var(--txt);padding:12px 18px;opacity:0;transition:.3s;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>AFCHAT<b>_</b>LAB</h1>
+      <div class="sub">Document-QA Benchmark · LM Studio × MCP × Claude Judge</div>
+    </div>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <nav id="tabs">
+    <button data-tab="control" class="active">Control</button>
+    <button data-tab="leaderboard">Leaderboard</button>
+    <button data-tab="questions">Questions</button>
+    <button data-tab="corpus">Corpus</button>
+  </nav>
+
+  <!-- CONTROL -->
+  <section id="control">
+    <div class="grid2">
+      <div class="panel">
+        <div class="panel-h">Run Configuration <span class="tag" id="cfgtag"></span></div>
+        <div class="form">
+          <div class="field">
+            <label>Models under test</label>
+            <div class="models" id="modellist"></div>
+          </div>
+          <div class="field">
+            <label>Judge</label>
+            <div class="judgebox" id="judgebox">Claude Agent SDK · <b id="judgemodel">claude-sonnet-4-6</b>
+              <span class="note">required — no Claude, no test</span></div>
+          </div>
+          <div class="field">
+            <label>Questions limit (0 = all)</label>
+            <input type="number" id="limit" min="0" value="0" />
+          </div>
+          <div class="field">
+            <label>Options</label>
+            <div class="opts">
+              <div class="opt on" id="opt-manage"><span class="sw"></span> Load/unload via lms</div>
+            </div>
+          </div>
+          <div class="runbtns">
+            <button class="launch" id="launch">▶ Launch Run</button>
+            <button class="stop" id="stop" disabled>■ Stop</button>
+          </div>
+          <div class="hint" id="launchhint"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-h">Live Console <span class="tag" id="constag">idle</span></div>
+        <div class="console" id="console"><span class="dim">// awaiting launch…</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LEADERBOARD -->
+  <section id="leaderboard" class="hidden">
+    <div class="selectbar">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.1em">RUN</span>
+      <select id="lbselect"></select>
+      <span id="lbmeta" style="font-family:var(--mono);font-size:11px;color:var(--dim)"></span>
+    </div>
+    <div class="panel"><div id="lbbody"></div></div>
+  </section>
+
+  <!-- QUESTIONS -->
+  <section id="questions" class="hidden">
+    <div class="selectbar">
+      <span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.1em">RUN</span>
+      <select id="qselect"></select>
+    </div>
+    <div class="qfilters" id="qfilters"></div>
+    <div id="qbody"></div>
+  </section>
+
+  <!-- CORPUS -->
+  <section id="corpus" class="hidden">
+    <div class="corp">
+      <div class="panel doclist" id="doclist"></div>
+      <div class="panel"><div class="docview" id="docview"><div class="empty">Select a document</div></div></div>
+    </div>
+  </section>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const el = (t,c,h)=>{const e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e;};
+const VMAP = {correct:'c', partial:'p', incorrect:'x'};
+let STATE=null, QCACHE=null, RUNCACHE={};
+
+function toast(msg){const t=$('#toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2600);}
+
+async function loadState(){
+  STATE = await (await fetch('/api/state')).json();
+  renderStats(); renderModels(); renderRunSelectors();
+  $('#cfgtag').textContent = 'ctx '+STATE.lmstudio.context_length;
+  if(STATE.judge && STATE.judge.model) $('#judgemodel').textContent = STATE.judge.model;
+}
+
+function renderStats(){
+  const s=$('#stats'); s.innerHTML='';
+  const running = STATE.run_status==='running';
+  const items=[
+    ['server', STATE.lmstudio.base_url.replace('http://',''), running?'run':'on'],
+    ['judge', STATE.judge.model, 'on'],
+    ['testset', STATE.testset.count+' Q', 'on'],
+    ['runs', STATE.runs.length, STATE.runs.length?'on':''],
+  ];
+  for(const [k,v,d] of items){
+    const p=el('div','pill'); p.innerHTML=`<span class="dot ${d}"></span><span class="k">${k}</span><span class="v">${v}</span>`;
+    s.appendChild(p);
+  }
+}
+
+function renderModels(){
+  const list=$('#modellist'); list.innerHTML='';
+  for(const m of STATE.models){
+    const r=el('div','mrow sel');
+    r.innerHTML=`<span class="box"><svg viewBox="0 0 10 10"><path d="M1 5l3 3 5-7" stroke="#000" stroke-width="1.6" fill="none"/></svg></span>
+      <span class="lbl">${m.label}</span><span class="id">${m.id}</span>`;
+    r.dataset.label=m.label;
+    r.onclick=()=>{r.classList.toggle('sel'); updateHint();};
+    list.appendChild(r);
+  }
+}
+
+$('#opt-manage').onclick=()=>{$('#opt-manage').classList.toggle('on'); updateHint();};
+$('#limit').oninput=updateHint;
+
+function gatherCfg(){
+  const models=[...document.querySelectorAll('.mrow.sel')].map(r=>r.dataset.label);
+  return {
+    models, limit:+$('#limit').value||0,
+    no_manage: !$('#opt-manage').classList.contains('on'),
+  };
+}
+function updateHint(){
+  const c=gatherCfg();
+  const n = c.limit||STATE.testset.count;
+  $('#launchhint').textContent =
+    `${c.models.length} model(s) × ${n} question(s) = ${c.models.length*n} evals · judge=claude`
+    + (c.no_manage?' · no-manage':'');
+}
+
+$('#launch').onclick=async()=>{
+  const cfg=gatherCfg();
+  if(!cfg.models.length){toast('select at least one model'); return;}
+  $('#launch').disabled=true; setConsTag('running');
+  resetConsole();
+  try{
+    const r=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    if(!r.ok){const e=await r.json(); toast(e.detail||'launch failed'); $('#launch').disabled=false; setConsTag('error'); return;}
+    streamRun();
+  }catch(e){toast('launch error'); $('#launch').disabled=false;}
+};
+
+let streaming=false;
+function setConsTag(txt){ $('#constag').textContent=txt; }
+
+function classFor(line){
+  const t=line.trim();
+  if(t.startsWith('===')||t.startsWith('MCP tools')) return 'h';
+  if(t.startsWith('$')) return 'cmd';
+  if(/^q\d+ ·/.test(t)) return 'hdr';
+  if(t.startsWith('Q:')) return 'q';
+  if(t.startsWith('A:')) return 'a';
+  if(t.startsWith('·')) return 'think';
+  if(t.startsWith('→')||t.startsWith('↳')) return 'tool';
+  if(t.startsWith('ref:')||t.startsWith('----')||t.startsWith('__exit__')||t.startsWith('Saved')
+     ||t.startsWith('->')||t.startsWith('Preflight')||t.startsWith('Unloading')||t.startsWith('loading')) return 'dim';
+  if(/✗|INCORRECT|ABORT|Traceback|Error/.test(t)) return 'bad';
+  if(/✓/.test(t)||(/CORRECT/.test(t)&&!/INCORRECT/.test(t))) return 'ok';
+  if(/~|PARTIAL/.test(t)) return 'par';
+  return 'a';
+}
+// Streamed console: append raw text chunks, keeping the in-progress (partial) line live.
+let pending="", pendingSpan=null;
+function resetConsole(){ $('#console').innerHTML=''; pending=""; pendingSpan=null; }
+function finalizeLine(line){
+  if(pendingSpan){ pendingSpan.remove(); pendingSpan=null; }
+  $('#console').appendChild(el('span', classFor(line), escapeHtml(line)+'\n'));
+}
+function appendChunk(text){
+  const c=$('#console'); let i=0;
+  while(i<text.length){
+    const nl=text.indexOf('\n', i);
+    if(nl===-1){ pending+=text.slice(i); break; }
+    pending+=text.slice(i,nl); finalizeLine(pending); pending=""; i=nl+1;
+  }
+  if(pending.length){
+    if(!pendingSpan){ pendingSpan=el('span','a',''); c.appendChild(pendingSpan); }
+    pendingSpan.className=classFor(pending); pendingSpan.textContent=pending;
+  } else if(pendingSpan){ pendingSpan.remove(); pendingSpan=null; }
+  c.scrollTop=c.scrollHeight;
+}
+function escapeHtml(s){return s.replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
+
+$('#stop').onclick=async()=>{
+  $('#stop').disabled=true; setConsTag('stopping…');
+  try{ await fetch('/api/run/stop',{method:'POST'}); toast('stopping run…'); }
+  catch(e){ toast('stop failed'); }
+};
+
+function streamRun(){
+  if(streaming) return;                 // one stream at a time
+  streaming=true; setConsTag('running'); $('#launch').disabled=true; $('#stop').disabled=false;
+  resetConsole();                        // SSE replays the full buffer from the start
+  const es=new EventSource('/api/run/stream');
+  es.onmessage=e=>{ appendChunk(JSON.parse(e.data)); };
+  es.addEventListener('done',async e=>{
+    es.close(); streaming=false; $('#launch').disabled=false; $('#stop').disabled=true; setConsTag('done');
+    toast('run complete'); await loadState();
+    if(STATE.runs[0]){$('#lbselect').value=STATE.runs[0].name; $('#qselect').value=STATE.runs[0].name;
+      renderLeaderboard(STATE.runs[0].name); }
+  });
+  es.onerror=()=>{es.close(); streaming=false; $('#launch').disabled=false; $('#stop').disabled=true; setConsTag('disconnected');};
+}
+
+// Auto-attach to ANY running job (even one started elsewhere), without a manual reload.
+setInterval(async()=>{
+  if(streaming) return;
+  try{ const s=await (await fetch('/api/state')).json();
+    if(s.run_status==='running') streamRun();
+  }catch(e){}
+}, 2500);
+
+/* ---------- run selectors shared by leaderboard + questions ---------- */
+function renderRunSelectors(){
+  for(const sel of ['#lbselect','#qselect']){
+    const s=$(sel); const cur=s.value; s.innerHTML='';
+    if(!STATE.runs.length){ s.appendChild(el('option',null,'— no runs yet —')); continue; }
+    for(const r of STATE.runs){ const o=el('option',null,`${r.name.replace('run-','').replace('.json','')}  ·  ${r.models.map(m=>m.label).join(', ').slice(0,40)}`); o.value=r.name; s.appendChild(o); }
+    if(cur) s.value=cur;
+  }
+  $('#lbselect').onchange=e=>renderLeaderboard(e.target.value);
+  $('#qselect').onchange=e=>renderQuestions(e.target.value);
+  if(STATE.runs.length){ renderLeaderboard(STATE.runs[0].name); }
+  else { $('#lbbody').innerHTML='<div class="empty">No runs yet — launch one from the Control tab.</div>'; }
+}
+
+async function getRun(name){ if(RUNCACHE[name]) return RUNCACHE[name];
+  const d=await (await fetch('/api/runs/'+name)).json(); RUNCACHE[name]=d; return d; }
+
+async function renderLeaderboard(name){
+  if(!name) return;
+  const d=await getRun(name);
+  const board=[...d.models].sort((a,b)=>b.pct-a.pct);
+  $('#lbmeta').textContent = `started ${d.started} · ${board.length} model(s)`;
+  const body=$('#lbbody'); body.innerHTML='';
+  const max=Math.max(1,...board.map(m=>m.pct));
+  board.forEach((m,i)=>{
+    const row=el('div','bar-row'+(i===0?' first':''));
+    row.innerHTML=`
+      <div class="rank">${String(i+1).padStart(2,'0')}</div>
+      <div class="mname">${m.label}<small>${m.id||''}</small></div>
+      <div class="track"><div class="fill" style="width:0%"></div></div>
+      <div class="pct">${m.pct}<small>%</small></div>
+      <div class="chips"><span class="chip c">${m.correct}✓</span><span class="chip p">${m.partial}~</span><span class="chip x">${m.incorrect}✗</span></div>
+      <div class="steps">${m.avg_steps}<br><span style="color:var(--dim2)">steps</span></div>`;
+    body.appendChild(row);
+    requestAnimationFrame(()=>{ setTimeout(()=>{ row.querySelector('.fill').style.width=(m.pct)+'%'; }, 60*i); });
+  });
+}
+
+async function renderQuestions(name){
+  if(!name){ $('#qbody').innerHTML='<div class="empty">No run selected.</div>'; return; }
+  const d=await getRun(name);
+  if(!QCACHE){ QCACHE = await (await fetch('/api/questions')).json(); }
+  const qmap={}; QCACHE.questions.forEach(q=>qmap[q.id]=q);
+  // flatten rows
+  const rows=[];
+  d.models.forEach(m=> (m.rows||[]).forEach(r=> rows.push({...r, model:m.label})));
+  // filters
+  const modelOpts=['all',...d.models.map(m=>m.label)];
+  buildFilters(modelOpts);
+  window.__qrows=rows; window.__qmap=qmap;
+  applyQFilters();
+}
+
+let QF={model:'all',verdict:'all',difficulty:'all'};
+function buildFilters(models){
+  const f=$('#qfilters'); f.innerHTML='';
+  const mk=(label,key,opts)=>{
+    const wrap=el('div'); const s=el('select');
+    opts.forEach(o=>{const op=el('option',null,(key==='model'?'model: ':label+': ')+o); op.value=o; s.appendChild(op);});
+    s.value=QF[key]; s.onchange=()=>{QF[key]=s.value; applyQFilters();}; wrap.appendChild(s); return wrap;
+  };
+  f.appendChild(mk('model','model',models));
+  f.appendChild(mk('verdict','verdict',['all','correct','partial','incorrect']));
+  f.appendChild(mk('diff','difficulty',['all','easy','medium','hard']));
+}
+function applyQFilters(){
+  const rows=window.__qrows||[], qmap=window.__qmap||{};
+  const b=$('#qbody'); b.innerHTML='';
+  const filt=rows.filter(r=>(QF.model==='all'||r.model===QF.model)
+    &&(QF.verdict==='all'||r.verdict===QF.verdict)&&(QF.difficulty==='all'||r.difficulty===QF.difficulty));
+  if(!filt.length){ b.innerHTML='<div class="empty">No matching rows.</div>'; return; }
+  for(const r of filt){
+    const q=qmap[r.id]||{}; const v=VMAP[r.verdict]||'x';
+    const row=el('div','qrow '+v);
+    row.innerHTML=`
+      <div class="qhead">
+        <span class="qid">${r.id}</span>
+        <span class="qm">${r.model}</span>
+        <span class="qq">${escapeHtml(q.question||'')}</span>
+        <span class="qv ${v}">${r.verdict}</span>
+        <span class="qs">${r.steps}⟳</span>
+      </div>
+      <div class="qbody">
+        <dl>
+          <dt>Question</dt><dd>${escapeHtml(q.question||'')}</dd>
+          <dt>Reference</dt><dd class="ref">${escapeHtml(q.reference_answer||'')}</dd>
+          <dt>Key facts</dt><dd>${(q.key_facts||[]).map(k=>'<code>'+escapeHtml(k)+'</code>').join(' ')}</dd>
+          <dt>Answer</dt><dd><div class="ans">${escapeHtml(r.answer||'(none)')}</div></dd>
+          <dt>Judge</dt><dd>${r.verdict} — ${escapeHtml(r.rationale||'')} <span style="color:var(--dim2)">[${r.grader}]</span></dd>
+          <dt>Source / meta</dt><dd style="color:var(--dim);font-family:var(--mono);font-size:11.5px">doc=${r.source_doc} · finish=${r.finish} · tool_calls=${r.n_tool_calls}${r.error?' · err='+escapeHtml(r.error):''}</dd>
+        </dl>
+      </div>`;
+    row.querySelector('.qhead').onclick=()=>row.classList.toggle('open');
+    b.appendChild(row);
+  }
+}
+
+/* ---------- corpus ---------- */
+async function loadCorpus(){
+  const docs=await (await fetch('/api/corpus')).json();
+  const list=$('#doclist'); list.innerHTML='';
+  docs.forEach((doc,i)=>{
+    const it=el('div','docitem'+(i===0?'':''));
+    it.innerHTML=`<div class="t">${doc.title}</div><div class="m">${doc.file} · ${doc.words} words</div>`;
+    it.onclick=async()=>{
+      [...list.children].forEach(c=>c.classList.remove('sel')); it.classList.add('sel');
+      const d=await (await fetch('/api/corpus/'+doc.file)).json();
+      $('#docview').innerHTML=mdToHtml(d.text);
+      $('#docview').scrollTop=0;
+    };
+    list.appendChild(it);
+  });
+}
+function mdToHtml(md){
+  const lines=md.split('\n'); let out=[], inTable=false;
+  const flushTable=()=>{ if(inTable){out.push('</table>'); inTable=false;} };
+  for(let line of lines){
+    if(/^\|(.+)\|$/.test(line.trim())){
+      const cells=line.trim().slice(1,-1).split('|').map(c=>c.trim());
+      if(cells.every(c=>/^:?-+:?$/.test(c))) continue; // separator
+      if(!inTable){out.push('<table>'); inTable=true; out.push('<tr>'+cells.map(c=>'<th>'+inline(c)+'</th>').join('')+'</tr>');}
+      else out.push('<tr>'+cells.map(c=>'<td>'+inline(c)+'</td>').join('')+'</tr>');
+      continue;
+    }
+    flushTable();
+    if(line.startsWith('### ')) out.push('<h3>'+inline(line.slice(4))+'</h3>');
+    else if(line.startsWith('## ')) out.push('<h2>'+inline(line.slice(3))+'</h2>');
+    else if(line.startsWith('# ')) out.push('<h1>'+inline(line.slice(2))+'</h1>');
+    else if(line.startsWith('- ')) out.push('<li>'+inline(line.slice(2))+'</li>');
+    else if(line.trim()==='') out.push('');
+    else out.push('<p>'+inline(line)+'</p>');
+  }
+  flushTable();
+  return out.join('\n');
+}
+function inline(s){return escapeHtml(s).replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/`(.+?)`/g,'<code>$1</code>');}
+
+/* ---------- tabs ---------- */
+$('#tabs').onclick=e=>{const b=e.target.closest('button'); if(!b)return;
+  [...$('#tabs').children].forEach(x=>x.classList.remove('active')); b.classList.add('active');
+  ['control','leaderboard','questions','corpus'].forEach(t=>$('#'+t).classList.add('hidden'));
+  const tab=b.dataset.tab; $('#'+tab).classList.remove('hidden');
+  if(tab==='questions'){ const n=$('#qselect').value; if(n&&n.startsWith('run-')) renderQuestions(n); }
+  if(tab==='corpus' && !$('#doclist').children.length) loadCorpus();
+};
+
+(async function init(){
+  await loadState(); updateHint();
+  if(STATE.run_status==='running'){ setConsTag('running','run'); $('#launch').disabled=true; streamRun(); }
+})();
+</script>
+</body>
+</html>

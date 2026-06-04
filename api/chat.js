@@ -6,7 +6,7 @@ const { createOllama } = require('ollama-ai-provider')
 const { streamText } = require('ai')
 const { z } = require('zod')
 const mammoth = require('mammoth')
-const pdfParse = require('pdf-parse')
+const { PDFParse } = require('pdf-parse')
 
 const { selectDefaultModel } = require('./model-selection')
 const { availableMemory } = require('./available-memory')
@@ -43,16 +43,17 @@ const ollamaModel = (name) => ollama(name, { simulateStreaming: true })
 const SYSTEM_PROMPT = `You are a document-grounded assistant. You MUST ONLY answer based on the documents in your library — NEVER from your own knowledge.
 
 MANDATORY WORKFLOW for every user question:
-1. FIRST call searchText with relevant keywords from the question
-2. If search results are relevant, call readFile to get the full document content
-3. THEN answer using ONLY information found in the documents
-4. Cite the exact document name and section in your answer
+1. Call searchText with the most specific terms from the question (e.g., the aircraft name plus the property, like "Heliotrope Z-7 range").
+2. For each candidate document returned, call readFile to confirm the value. Search is line-based and frequently misses specs that live in tables, so readFile is REQUIRED before concluding "not in documents".
+3. If your first searchText returns nothing useful, try at least one more query with different terms (synonyms, just the property name, just the aircraft name).
+4. Cite the exact document path and section in your final answer.
 
-CRITICAL RULES:
-- You MUST call at least one tool (searchText or readFile) before answering ANY factual question
-- If you cannot find the answer in the documents, say "I could not find this information in the available documents"
-- NEVER guess, infer, or use your training knowledge — only state what the documents say
-- If the documents say something different from what you "know", the documents are always correct`
+ABSOLUTE RULES:
+- NEVER compare two values unless BOTH are confirmed from the documents. If one side is missing after readFile, state which side is missing and STOP — do not infer, do not estimate, do not conclude a comparison anyway.
+- NEVER conclude information is missing after a single searchText call. You must readFile the most plausible document first.
+- If you cannot find the answer after at least one searchText AND one readFile, respond exactly: "I could not find this information in the available documents."
+- NEVER guess, infer, or use your training knowledge — only state what the documents say.
+- If the documents contradict what you "know", the documents are always correct.`
 
 // ── Tools ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,23 @@ function safePath(filepath) {
     throw new Error('Access denied: path outside documents directory')
   }
   return resolved
+}
+
+// Helper: extract plain text from any supported file type. Reading PDFs/DOCX
+// as utf-8 produces binary garbage, which then leaks into the model context.
+async function extractText(fullPath) {
+  const ext = path.extname(fullPath).toLowerCase()
+  if (ext === '.pdf') {
+    const buf = fs.readFileSync(fullPath)
+    const parser = new PDFParse({ data: buf })
+    const data = await parser.getText()
+    return data.text
+  }
+  if (ext === '.docx') {
+    const result = await mammoth.extractRawText({ path: fullPath })
+    return result.value
+  }
+  return fs.readFileSync(fullPath, 'utf-8')
 }
 
 const tools = {
@@ -104,7 +122,7 @@ const tools = {
         if (!fs.existsSync(fullPath)) {
           return { error: `File not found: ${filepath}` }
         }
-        const content = fs.readFileSync(fullPath, 'utf-8')
+        const content = await extractText(fullPath)
         const MAX_CHARS = 8000
         return {
           filepath,
@@ -119,29 +137,36 @@ const tools = {
   },
 
   searchText: {
-    description: 'Search for a keyword or phrase across all documents. Returns matching lines with their source file and line number.',
+    description: 'Search documents for a query. Multi-word queries are AND-matched at the document level: a document is included only if ALL terms appear somewhere in the document (not necessarily on the same line). For each matching document the tool returns the best lines (those containing the most query terms). After this you should call readFile on the most likely document — do not assume information is absent based on search alone, because specs in tables often span multiple lines.',
     parameters: z.object({
-      query: z.string().describe('Text to search for. Case-insensitive.')
+      query: z.string().describe('Search terms. Case-insensitive. Multiple words are AND-matched across the whole document.')
     }),
     execute: async ({ query }) => {
       try {
-        const results = []
+        const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1)
+        if (terms.length === 0) return { query, documents: [], total: 0 }
+
         const files = walkDir(DOCS_PATH)
+        const documents = []
         for (const file of files) {
           const fullPath = path.join(DOCS_PATH, file)
-          const content = fs.readFileSync(fullPath, 'utf-8')
-          const lines = content.split('\n')
-          lines.forEach((line, i) => {
-            if (line.toLowerCase().includes(query.toLowerCase())) {
-              results.push({ file, line: i + 1, text: line.trim() })
-            }
+          const content = await extractText(fullPath)
+          const lower = content.toLowerCase()
+          if (!terms.every(t => lower.includes(t))) continue
+
+          const scored = []
+          content.split('\n').forEach((line, i) => {
+            const ll = line.toLowerCase()
+            const hits = terms.filter(t => ll.includes(t)).length
+            if (hits > 0) scored.push({ line: i + 1, text: line.trim(), hits })
+          })
+          scored.sort((a, b) => b.hits - a.hits || a.line - b.line)
+          documents.push({
+            file,
+            topLines: scored.slice(0, 4).map(s => ({ line: s.line, text: s.text }))
           })
         }
-        return {
-          query,
-          matches: results.slice(0, 30),
-          total: results.length
-        }
+        return { query, documents, total: documents.length }
       } catch (err) {
         return { error: err.message }
       }
@@ -152,7 +177,7 @@ const tools = {
 // ── Auto Pre-Search ──────────────────────────────────────────────────────────
 
 // Extract keywords from a user message and search documents automatically
-function autoSearch(userMessage) {
+async function autoSearch(userMessage) {
   // Remove common stop words, keep meaningful terms
   const stopWords = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'what', 'which', 'who', 'how', 'when', 'where', 'why', 'do', 'does', 'did', 'can', 'could', 'will', 'would', 'should', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'and', 'or', 'not', 'no', 'my', 'your', 'i', 'me', 'it', 'this', 'that', 'all', 'any', 'about', 'tell', 'give', 'show', 'find', 'get', 'please', 'allowed', 'there'])
   const words = userMessage.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w))
@@ -163,7 +188,7 @@ function autoSearch(userMessage) {
   const files = walkDir(DOCS_PATH)
   for (const file of files) {
     const fullPath = path.join(DOCS_PATH, file)
-    const content = fs.readFileSync(fullPath, 'utf-8')
+    const content = await extractText(fullPath)
     const lines = content.split('\n')
     for (const word of words) {
       lines.forEach((line, i) => {
@@ -235,7 +260,7 @@ const server = http.createServer(async (req, res) => {
     // Auto pre-search: inject document context if enabled
     let systemPrompt = SYSTEM_PROMPT
     if (body.autoSearch && lastMsg?.role === 'user') {
-      const searchResults = autoSearch(lastMsg.content)
+      const searchResults = await autoSearch(lastMsg.content)
       if (searchResults) {
         const context = searchResults.map(r => `[${r.file}:${r.line}] ${r.text}`).join('\n')
         systemPrompt += `\n\nRELEVANT DOCUMENT EXCERPTS (pre-searched for you — use these to answer, and call readFile for full context if needed):\n${context}`
@@ -366,10 +391,46 @@ const server = http.createServer(async (req, res) => {
         return
       }
 
+      // Evict any other resident models before loading the new one. Belt-
+      // and-suspenders alongside OLLAMA_MAX_LOADED_MODELS=1 — guarantees the
+      // old model's VRAM is freed before we start loading the new one.
+      const others = (psData.models || []).filter(m => m.name !== body.model)
+      for (const m of others) {
+        try {
+          await fetch('http://localhost:11434/api/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: m.name, prompt: '', keep_alive: 0 })
+          })
+          console.log(`[api] evicted model: ${m.name}`)
+        } catch (e) {
+          console.warn(`[api] failed to evict ${m.name}: ${e.message}`)
+        }
+      }
+
+      // Eager-load the new model. Empty prompt with keep_alive triggers
+      // Ollama to allocate weights/KV cache and return once the runner is
+      // ready — so the client knows the model is actually usable.
+      console.log(`[api] loading model: ${body.model}`)
+      const loadStart = Date.now()
+      try {
+        await fetch('http://localhost:11434/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: body.model, prompt: '', keep_alive: '5m', stream: false })
+        })
+        console.log(`[api] model loaded in ${((Date.now() - loadStart) / 1000).toFixed(1)}s`)
+      } catch (e) {
+        console.error(`[api] eager load failed: ${e.message}`)
+        res.writeHead(500, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `Failed to load model: ${e.message}` }))
+        return
+      }
+
       currentModel = body.model
       console.log(`[api] model switched to: ${currentModel}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ success: true, model: currentModel, fitsInRAM }))
+      res.end(JSON.stringify({ success: true, model: currentModel, fitsInRAM, loadMs: Date.now() - loadStart }))
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err.message }))
@@ -395,7 +456,8 @@ const server = http.createServer(async (req, res) => {
 
       if (ext === '.pdf') {
         const buf = fs.readFileSync(fullPath)
-        const data = await pdfParse(buf)
+        const parser = new PDFParse({ data: buf })
+        const data = await parser.getText()
         content = data.text
       } else if (ext === '.docx') {
         const result = await mammoth.extractRawText({ path: fullPath })
@@ -431,11 +493,17 @@ const server = http.createServer(async (req, res) => {
 
   // Upload a document (multipart/form-data is complex — use raw body with filename header)
   if (req.method === 'POST' && req.url === '/documents') {
-    const filename = req.headers['x-filename']
-    if (!filename) {
+    const rawFilename = req.headers['x-filename']
+    if (!rawFilename) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Missing X-Filename header' }))
       return
+    }
+    let filename
+    try {
+      filename = decodeURIComponent(rawFilename)
+    } catch {
+      filename = rawFilename
     }
 
     try {

@@ -56,9 +56,8 @@ export default function ChatPage() {
   return (
     <div className="flex flex-col h-screen">
       {/* Header */}
-      <header className="flex items-center gap-2.5 px-4 py-3 border-b bg-background shadow-sm">
-        <HelicopterLoader className="h-6 w-6 text-primary" spinning={false} />
-        <span className="font-semibold text-foreground">124 Chat Agent</span>
+      <header className="flex items-center gap-2.5 px-4 py-0 bg-background">
+        <img src="./aristo-logo.png" alt="Aristo" className="h-28 w-auto select-none" draggable="false" />
         <div className="ml-auto flex items-center gap-1">
           <ModelSelector />
           <button
@@ -82,10 +81,15 @@ export default function ChatPage() {
         <ConversationContent>
           {/* Empty state */}
           {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-[60vh] text-muted-foreground gap-3">
-              <HelicopterLoader className="h-16 w-16 text-muted-foreground" spinning={false} />
-              <p className="text-lg font-medium">Ask me anything about your documents</p>
-              <p className="text-sm">I&apos;ll search and read them to find your answer</p>
+            <div className="flex flex-col items-center justify-center h-[60vh] gap-4">
+              <img
+                src="./aristo-logo.png"
+                alt="Aristo"
+                className="h-80 w-auto select-none drop-shadow-[0_0_70px_rgba(59,130,246,0.45)]"
+                draggable="false"
+              />
+              <p className="text-lg font-medium text-foreground">Ask me anything about your documents</p>
+              <p className="text-sm text-muted-foreground">I&apos;ll search and read them to find your answer</p>
             </div>
           )}
 

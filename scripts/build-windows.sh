@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build Windows x64 portable bundles of 124 Chat Agent on macOS.
+# Build Windows x64 portable bundles of Aristo on macOS.
 #
 # Outputs (split so model changes don't force re-uploading the whole bundle):
-#   dist/124-Chat-Agent-Windows-app.zip      ~800 MB  (code + Electron + ollama runtime)
-#   dist/124-Chat-Agent-Windows-models.zip   ~3.6 GB  (resources/models only)
+#   dist/Aristo-Windows-app.zip      ~800 MB  (code + Electron + ollama runtime)
+#   dist/Aristo-Windows-models.zip   ~3.6 GB  (resources/models only)
 #
 # On Windows, extract BOTH zips to the same folder. They merge cleanly because
 # they don't share any files — only the empty parent dirs overlap.
@@ -33,8 +33,8 @@ OLLAMA_ZIP="$CACHE_DIR/ollama-win.zip"
 OLLAMA_URL="https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
 
 EXCLUDE_FAMILY="gemma4"   # model family to leave out of the build
-APP_ZIP="$ROOT/dist/124-Chat-Agent-Windows-app.zip"
-MODELS_ZIP="$ROOT/dist/124-Chat-Agent-Windows-models.zip"
+APP_ZIP="$ROOT/dist/Aristo-Windows-app.zip"
+MODELS_ZIP="$ROOT/dist/Aristo-Windows-models.zip"
 SCRIPT_PATH="scripts/build-windows.sh"
 
 [[ "$(uname)" == "Darwin" ]] || { echo "ERROR: this script must run on macOS." >&2; exit 1; }
@@ -201,4 +201,4 @@ echo "✓ Build complete"
 [[ -f "$MODELS_ZIP" ]] && echo "  $MODELS_ZIP ($(du -sh "$MODELS_ZIP" | cut -f1))"
 echo
 echo "On Windows: extract BOTH zips into the same folder, then run"
-echo "            win-unpacked/124 Chat Agent.exe"
+echo "            win-unpacked/Aristo.exe"

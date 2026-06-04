@@ -40,7 +40,10 @@ function startOllama() {
     env: {
       ...process.env,
       OLLAMA_MODELS: getResourcePath('models'),
-      OLLAMA_HOST: '127.0.0.1:11434'
+      OLLAMA_HOST: '127.0.0.1:11434',
+      // Keep at most one model resident — this is an 8 GB air-gapped target,
+      // two models swapping into RAM thrashes swap (which is disabled).
+      OLLAMA_MAX_LOADED_MODELS: '1'
     }
   })
   ollamaProcess.stdout.on('data', d => {
@@ -78,11 +81,15 @@ app.whenReady().then(async () => {
   // Start API server
   require('./api/chat.js')
 
-  // Wait for both services to be ready before opening window
-  await Promise.all([
+  const isDev = !app.isPackaged
+
+  // Wait for backends — and in dev, also wait for the Next dev server.
+  const waits = [
     waitForPort('http://localhost:11434'),
     waitForPort('http://localhost:3001/health')
-  ])
+  ]
+  if (isDev) waits.push(waitForPort('http://localhost:3000'))
+  await Promise.all(waits)
 
   mainWindow = new BrowserWindow({
     width: 1000,
@@ -95,8 +102,14 @@ app.whenReady().then(async () => {
     }
   })
 
-  // Load compiled Next.js static export
-  mainWindow.loadFile(path.join(__dirname, 'out/index.html'))
+  if (isDev) {
+    // Live next-dev server — HMR works, no rebuild needed for UI edits.
+    mainWindow.loadURL('http://localhost:3000')
+    mainWindow.webContents.openDevTools({ mode: 'detach' })
+  } else {
+    // Packaged build serves the static export.
+    mainWindow.loadFile(path.join(__dirname, 'out/index.html'))
+  }
 
   // Flush early logs once page is ready
   mainWindow.webContents.on('did-finish-load', () => {

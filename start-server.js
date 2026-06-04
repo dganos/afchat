@@ -10,7 +10,8 @@ const ollama = spawn(OLLAMA_BIN, ['serve'], {
   env: {
     ...process.env,
     OLLAMA_MODELS: MODELS_PATH,
-    OLLAMA_HOST: '127.0.0.1:11434'
+    OLLAMA_HOST: '127.0.0.1:11434',
+    OLLAMA_MAX_LOADED_MODELS: '1'
   }
 })
 ollama.stdout.on('data', d => console.log('[ollama]', d.toString().trimEnd()))
