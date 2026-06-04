@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -64,6 +65,51 @@ def list_runs() -> list[dict]:
             }
         )
     return out
+
+
+def _total_mem() -> int:
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, ValueError, OSError):
+        return 0
+
+
+def _available_mem() -> int:
+    """Realistically allocatable RAM, including reclaimable cache.
+
+    Mirrors the app's api/available-memory.js so the lab's "free" figure
+    matches what a model load will actually find available.
+    """
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=1).stdout
+            m = re.search(r"page size of (\d+) bytes", out)
+            page = int(m.group(1)) if m else 4096
+            pages = 0
+            for key in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"):
+                mm = re.search(rf"{key}:\s+(\d+)", out)
+                if mm:
+                    pages += int(mm.group(1))
+            if pages:
+                return pages * page
+        except Exception:  # noqa: BLE001
+            pass
+    elif sys.platform.startswith("linux"):
+        try:
+            mm = re.search(r"MemAvailable:\s+(\d+)\s+kB", Path("/proc/meminfo").read_text())
+            if mm:
+                return int(mm.group(1)) * 1024
+        except Exception:  # noqa: BLE001
+            pass
+    return 0
+
+
+@app.get("/api/memory")
+def memory() -> dict:
+    total = _total_mem()
+    free = _available_mem()
+    used = max(0, total - free) if (total and free) else 0
+    return {"total": total, "free": free, "used": used}
 
 
 @app.get("/", response_class=HTMLResponse)

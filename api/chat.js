@@ -233,6 +233,23 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+  // Lightweight live memory stats for the htop-style meter. Polled frequently,
+  // so it avoids the heavier /models path — only a quick Ollama /api/ps probe
+  // (best-effort) to report how much RAM the loaded model(s) hold.
+  if (req.method === 'GET' && req.url === '/memory') {
+    const total = os.totalmem()
+    const free = availableMemory()
+    let loaded = 0
+    try {
+      const psRes = await fetch('http://localhost:11434/api/ps')
+      const psData = await psRes.json()
+      loaded = (psData.models || []).reduce((a, m) => a + (m.size || 0), 0)
+    } catch {}
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ total, free, used: total - free, loaded }))
+    return
+  }
+
 
   console.log(`[api] ${req.method} ${req.url}`)
 

@@ -13,6 +13,7 @@ import { HelicopterLoader } from '@/components/helicopter-loader'
 import { LogsPanel } from '@/components/logs-panel'
 import { DocumentsPanel } from '@/components/documents-panel'
 import { ModelSelector } from '@/components/model-selector'
+import { MemoryMeter } from '@/components/memory-meter'
 import { SettingsPanel } from '@/components/settings-panel'
 
 const DEFAULT_SETTINGS = { autoSearch: false }
@@ -59,6 +60,7 @@ export default function ChatPage() {
       <header className="flex items-center gap-2.5 px-4 py-0 bg-background">
         <img src="./aristo-logo.png" alt="Aristo" className="h-28 w-auto select-none" draggable="false" />
         <div className="ml-auto flex items-center gap-1">
+          <MemoryMeter />
           <ModelSelector />
           <button
             onClick={() => setDocsOpen(true)}
