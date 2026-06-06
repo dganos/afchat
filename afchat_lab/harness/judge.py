@@ -11,8 +11,17 @@ Scoring: correct -> 1.0, partial -> 0.5, incorrect -> 0.0.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from dataclasses import dataclass
+
+log = logging.getLogger("judge")
+logging.basicConfig(
+    filename="judge.log",
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(message)s",
+)
 
 
 class JudgeUnavailable(RuntimeError):
@@ -54,6 +63,7 @@ class Verdict:
     score: float
     rationale: str
     grader: str = "claude-agent-sdk"
+    raw: str = ""
 
 
 def _parse_json(text: str) -> dict | None:
@@ -73,6 +83,8 @@ async def _query_claude(prompt: str, model: str) -> str:
     except Exception as e:  # noqa: BLE001 - not installed
         raise JudgeUnavailable(f"claude-agent-sdk not importable: {e}") from e
 
+    t0 = time.monotonic()
+    log.debug("CALL model=%s prompt_len=%d", model, len(prompt))
     try:
         options = ClaudeAgentOptions(
             system_prompt=JUDGE_SYSTEM,
@@ -86,8 +98,12 @@ async def _query_claude(prompt: str, model: str) -> str:
                 t = getattr(block, "text", None)
                 if t:
                     text += t
+        elapsed = round(time.monotonic() - t0, 2)
+        log.debug("OK elapsed=%.2fs response_len=%d response=%s", elapsed, len(text), text[:120])
         return text
     except Exception as e:  # noqa: BLE001 - auth / runtime failure
+        elapsed = round(time.monotonic() - t0, 2)
+        log.error("FAIL elapsed=%.2fs error=%s", elapsed, e)
         raise JudgeUnavailable(f"Claude judge call failed: {e}") from e
 
 
@@ -112,8 +128,7 @@ async def grade(question: str, reference: str, key_facts: list[str], candidate: 
     text = await _query_claude(prompt, model)
     data = _parse_json(text)
     if not data or "verdict" not in data:
-        # Reached Claude but couldn't parse this one answer — score it incorrect, don't fall back.
-        return Verdict("incorrect", 0.0, "judge output unparseable")
+        return Verdict("incorrect", 0.0, "judge output unparseable", raw=text.strip())
     verdict = str(data.get("verdict", "")).lower().strip()
     score = float(data.get("score", _SCORE.get(verdict, 0.0)))
-    return Verdict(verdict, score, str(data.get("rationale", ""))[:200])
+    return Verdict(verdict, score, str(data.get("rationale", "")), raw=text.strip())

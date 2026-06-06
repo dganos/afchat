@@ -25,20 +25,27 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 LAB = Path(__file__).resolve().parent.parent
 WEBUI = Path(__file__).resolve().parent
-RESULTS = LAB / "results"
 
 app = FastAPI(title="afchat_lab")
 
 # Single active run (this is a single-user local tool).
-RUN: dict = {"proc": None, "lines": [], "status": "idle", "started": None, "cmd": None}
+RUN: dict = {"proc": None, "lines": [], "offset": 0, "status": "idle", "started": None, "cmd": None}
+
+ACTIVE_CONFIG: str = "config.yaml"
+CONFIG_OPTIONS: list[str] = ["config.yaml", "config_he.yaml"]
 
 
-def load_config() -> dict:
-    return yaml.safe_load((LAB / "config.yaml").read_text())
+def load_config(cfg: str | None = None) -> dict:
+    return yaml.safe_load((LAB / (cfg or ACTIVE_CONFIG)).read_text())
 
 
 def load_testset() -> dict:
     return json.loads((LAB / load_config()["paths"]["testset"]).read_text())
+
+
+def results_dir() -> Path:
+    cfg = load_config()
+    return LAB / cfg["paths"].get("results_dir", "results")
 
 
 def _board(models: list[dict]) -> list[dict]:
@@ -46,10 +53,10 @@ def _board(models: list[dict]) -> list[dict]:
 
 
 def list_runs() -> list[dict]:
-    if not RESULTS.exists():
+    if not results_dir().exists():
         return []
     out = []
-    for f in sorted(RESULTS.glob("run-*.json"), reverse=True):
+    for f in sorted(results_dir().glob("run-*.json"), reverse=True):
         try:
             d = json.loads(f.read_text())
         except Exception:  # noqa: BLE001
@@ -117,6 +124,44 @@ def index() -> str:
     return (WEBUI / "index.html").read_text()
 
 
+@app.get("/api/configs")
+def list_configs() -> dict:
+    return {
+        "active": ACTIVE_CONFIG,
+        "options": [c for c in CONFIG_OPTIONS if (LAB / c).exists()],
+    }
+
+
+@app.post("/api/configs/{name}")
+async def set_config(name: str) -> dict:
+    global ACTIVE_CONFIG
+    if name not in CONFIG_OPTIONS or not (LAB / name).exists():
+        raise HTTPException(400, f"unknown config: {name}")
+    if RUN["status"] == "running":
+        raise HTTPException(409, "cannot switch config while a run is in progress")
+    ACTIVE_CONFIG = name
+    return {"active": ACTIVE_CONFIG}
+
+
+@app.get("/api/runs/aggregate")
+def aggregate_runs() -> JSONResponse:
+    best: dict = {}
+    for run_meta in list_runs():
+        try:
+            d = json.loads((results_dir() / run_meta["name"]).read_text())
+        except Exception:
+            continue
+        for m in d.get("models", []):
+            label = m["label"]
+            if label not in best or m.get("pct", 0) > best[label].get("pct", 0):
+                best[label] = {**m, "best_run": run_meta["name"], "best_started": d.get("started")}
+    return JSONResponse({
+        "aggregate": True,
+        "started": "all runs",
+        "models": sorted(best.values(), key=lambda m: m.get("pct", 0), reverse=True),
+    })
+
+
 @app.get("/api/state")
 def state() -> dict:
     cfg = load_config()
@@ -135,10 +180,56 @@ def state() -> dict:
 def get_run(name: str) -> JSONResponse:
     if not re.fullmatch(r"run-[0-9-]+\.json", name):
         raise HTTPException(400, "bad name")
-    f = RESULTS / name
+    f = results_dir() / name
     if not f.exists():
         raise HTTPException(404, "not found")
     return JSONResponse(json.loads(f.read_text()))
+
+
+@app.delete("/api/runs/{name}")
+def delete_run(name: str) -> dict:
+    if not re.fullmatch(r"run-[0-9-]+\.json", name):
+        raise HTTPException(400, "bad name")
+    f = results_dir() / name
+    if not f.exists():
+        raise HTTPException(404, "not found")
+    f.unlink()
+    # Also remove from cache hint (client handles RUNCACHE)
+    return {"deleted": name}
+
+
+@app.get("/api/logs")
+def list_logs() -> JSONResponse:
+    rdir = results_dir()
+    if not rdir.exists():
+        return JSONResponse([])
+    entries = []
+    for f in sorted(rdir.glob("run-*.log"), reverse=True):
+        has_json = (rdir / f.name.replace(".log", ".json")).exists()
+        entries.append({"name": f.name, "size": f.stat().st_size, "has_json": has_json})
+    return JSONResponse(entries)
+
+
+@app.delete("/api/logs/{name}")
+def delete_log(name: str) -> dict:
+    if not re.fullmatch(r"run-[0-9-]+\.log", name):
+        raise HTTPException(400, "bad name")
+    f = results_dir() / name
+    if not f.exists():
+        raise HTTPException(404, "not found")
+    f.unlink()
+    return {"deleted": name}
+
+
+@app.get("/api/logs/{name}")
+def get_log(name: str):
+    if not re.fullmatch(r"run-[0-9-]+\.log", name):
+        raise HTTPException(400, "bad name")
+    f = results_dir() / name
+    if not f.exists():
+        raise HTTPException(404, "not found")
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(f.read_text(encoding="utf-8", errors="replace"))
 
 
 @app.get("/api/questions")
@@ -167,17 +258,30 @@ def corpus_doc(name: str) -> JSONResponse:
     return JSONResponse({"file": name, "text": f.read_text()})
 
 
+MAX_LOG_LINES = 400
+
 async def _reader(proc) -> None:
-    # Read raw chunks (not whole lines) so streamed tokens reach the UI as they arrive.
+    # Read raw chunks so streamed tokens reach the UI as they arrive.
     assert proc.stdout is not None
     while True:
-        chunk = await proc.stdout.read(256)
+        chunk = await proc.stdout.read(4096)
         if not chunk:
             break
         RUN["lines"].append(chunk.decode(errors="replace"))
+        if len(RUN["lines"]) > MAX_LOG_LINES:
+            trim = MAX_LOG_LINES // 2
+            del RUN["lines"][:trim]
+            RUN["offset"] += trim
     await proc.wait()
     RUN["lines"].append(f"\n__exit__ {proc.returncode}\n")
     RUN["status"] = "done"
+    # Clean up stale live file whether run completed or was killed.
+    live = results_dir() / "run-live.json"
+    if live.exists():
+        try:
+            live.unlink()
+        except Exception:
+            pass
 
 
 @app.post("/api/run")
@@ -194,11 +298,14 @@ async def start_run(req: Request) -> dict:
     if body.get("no_manage"):
         flags.append("--no-manage")
 
-    cmd = [sys.executable, "-u", "-m", "harness.run_eval", *flags]
-    RUN.update(status="running", lines=[f"$ {' '.join(cmd)}\n"], started=datetime.now().isoformat(timespec="seconds"), cmd=cmd)
+    cmd = [sys.executable, "-u", "-m", "harness.run_eval", "--config", ACTIVE_CONFIG, *flags]
+    RUN.update(status="running", lines=[f"$ {' '.join(cmd)}\n"], offset=0, started=datetime.now().isoformat(timespec="seconds"), cmd=cmd)
+    lms_bin = str(Path.home() / ".lmstudio" / "bin")
+    run_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    run_env["PATH"] = lms_bin + os.pathsep + run_env.get("PATH", "")
     proc = await asyncio.create_subprocess_exec(
         *cmd, cwd=str(LAB), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env=run_env,
     )
     RUN["proc"] = proc
     asyncio.create_task(_reader(proc))
@@ -212,33 +319,61 @@ async def stop_run() -> dict:
         raise HTTPException(409, "no run in progress")
     RUN["status"] = "stopping"
     RUN["lines"].append("__stop__ requested by user — terminating run")
+    # SIGKILL — can't be caught or ignored, kills immediately even mid-API-call.
     try:
-        proc.terminate()
+        proc.kill()
     except ProcessLookupError:
         pass
-    # Free any model the run had loaded so it doesn't sit in RAM.
+    # Give the process 2s to die, then unload models.
     try:
-        p = await asyncio.create_subprocess_exec("lms", "unload", "--all",
+        await asyncio.wait_for(proc.wait(), timeout=2.0)
+    except asyncio.TimeoutError:
+        pass
+    # Unload models with a timeout so we don't hang here either.
+    try:
+        lms_path = str(Path.home() / ".lmstudio" / "bin" / "lms")
+        p = await asyncio.create_subprocess_exec(lms_path, "unload", "--all",
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await p.wait()
+        await asyncio.wait_for(p.wait(), timeout=10.0)
     except Exception:  # noqa: BLE001
         pass
     return {"ok": True}
 
 
+@app.get("/api/run/live")
+def get_live_run() -> JSONResponse:
+    if RUN["status"] != "running":
+        raise HTTPException(404, "no live run")
+    f = results_dir() / "run-live.json"
+    if not f.exists():
+        raise HTTPException(404, "no live run")
+    return JSONResponse(json.loads(f.read_text()))
+
+
 @app.get("/api/run/stream")
 async def run_stream() -> StreamingResponse:
     async def gen():
-        idx = 0
-        # Replay buffered lines, then follow until the run ends.
+        # abs_idx is the absolute position across all items ever appended (survives trims).
+        # Start 50 items from the end so reconnects catch up quickly.
+        abs_idx = max(0, RUN["offset"] + len(RUN["lines"]) - 50)
         while True:
-            lines = RUN["lines"]
-            while idx < len(lines):
-                yield f"data: {json.dumps(lines[idx])}\n\n"
-                idx += 1
+            # Recompute local_idx on EVERY inner iteration so trims that happen
+            # between yields are handled correctly (local_idx is always fresh).
+            while True:
+                local_idx = abs_idx - RUN["offset"]
+                if local_idx < 0:       # trim skipped past abs_idx; jump to buffer start
+                    local_idx = 0
+                    abs_idx = RUN["offset"]
+                if local_idx >= len(RUN["lines"]):
+                    break               # caught up; wait for more data
+                yield f"data: {json.dumps(RUN['lines'][local_idx])}\n\n"
+                abs_idx += 1
             if RUN["status"] != "running":
                 yield f"event: done\ndata: {json.dumps(RUN['status'])}\n\n"
                 return
+            # Empty-string data message: client uses it to keep the watchdog alive
+            # during slow generation, and skips appending it (empty content).
+            yield f"data: {json.dumps('')}\n\n"
             await asyncio.sleep(0.4)
 
     return StreamingResponse(gen(), media_type="text/event-stream")

@@ -36,22 +36,11 @@ judge:
 
 # Candidate models under test (identifiers from `lms ls`).
 models:
-  - id: nvidia/nemotron-3-nano-4b
-    label: nemotron-4b
-  - id: google/gemma-4-e2b
-    label: gemma-4-e2b
   - id: google/gemma-4-e4b
     label: gemma-4-e4b
-  - id: dictalm2.0-instruct
-    label: dictalm2-7b
-  - id: dictalm-3.0-1.7b-thinking
-    label: dictalm3-1.7b
-  - id: gemma-4-12b-it
-    label: gemma-4-12b-iq2m
-    # 12B UD-IQ2_M (~4.4 GB). On an 8 GB box the weights load but the Metal
-    # compute buffer OOMs at full offload — partial CPU offload + a smaller
-    # context is required to load AND run inference. Vision/audio projector
-    # (mmproj, type "gemma4uv") is unsupported by the installed runtime and is
-    # disabled in the model folder; the lab is text-only anyway.
-    gpu: 0.4
-    context_length: 4096
+  - id: google/gemma-4-12b
+    label: gemma-4-12b
+  - id: qwen/qwen3-4b
+    label: qwen3-4b
+  - id: microsoft/phi-4-mini-reasoning
+    label: phi-4-mini-reasoning

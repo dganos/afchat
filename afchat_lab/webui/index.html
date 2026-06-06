@@ -69,6 +69,7 @@
   .panel-h{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;
     color:var(--dim);padding:12px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
   .panel-h .tag{color:var(--amber)}
+  .timer{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.1em;margin-left:auto}
 
   /* ---------- control ---------- */
   .grid2{display:grid;grid-template-columns:380px 1fr;gap:18px}
@@ -97,6 +98,10 @@
   .opt.on .sw::after{left:14px}
   input[type=number]{width:80px;background:#0b0e13;border:1px solid var(--line2);color:var(--txt);
     font-family:var(--mono);padding:8px 10px}
+  .preset-btn{font-family:var(--mono);font-size:11px;letter-spacing:.08em;padding:8px 11px;
+    background:transparent;border:1px solid var(--line2);color:var(--dim);cursor:pointer;transition:.15s}
+  .preset-btn:hover{color:var(--txt);border-color:var(--dim)}
+  .preset-btn.active{border-color:var(--amber);color:var(--amber)}
   .judgebox{font-family:var(--mono);font-size:12px;color:var(--dim);border:1px solid var(--violet);
     background:rgba(180,140,255,.07);padding:11px 13px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
   .judgebox b{color:var(--violet)}
@@ -131,7 +136,7 @@
   .console::-webkit-scrollbar-thumb{background:var(--line2)}
 
   /* ---------- leaderboard ---------- */
-  .bar-row{display:grid;grid-template-columns:42px 150px 1fr 88px 120px 70px;gap:14px;align-items:center;
+  .bar-row{display:grid;grid-template-columns:42px 150px 1fr 88px 120px 70px 90px;gap:14px;align-items:center;
     padding:15px 18px;border-bottom:1px solid var(--line)}
   .bar-row:last-child{border-bottom:none}
   .rank{font-family:var(--disp);font-size:26px;color:var(--dim2);text-align:center}
@@ -152,27 +157,53 @@
     font-size:12px;padding:9px 11px}
   .empty{padding:60px 20px;text-align:center;color:var(--dim);font-family:var(--mono);font-size:12px}
 
-  /* ---------- questions ---------- */
-  .qfilters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-  .qrow{border:1px solid var(--line);border-left-width:3px;margin-bottom:7px;background:var(--panel)}
+  /* ---------- logs ---------- */
+  /* run entries */
+  .run-entry{border:1px solid var(--line2);margin-bottom:8px;background:var(--panel)}
+  .run-entry.partial{opacity:.7}
+  .run-head{display:flex;align-items:center;gap:14px;padding:13px 16px;cursor:pointer;
+    font-family:var(--mono);font-size:12px;user-select:none}
+  .run-head:hover{background:#0d1116}
+  .run-chevron{color:var(--dim2);font-size:10px;transition:.15s;flex:0 0 auto}
+  .run-entry.open .run-chevron{transform:rotate(90deg)}
+  .run-date{color:var(--amber);letter-spacing:.06em;flex:0 0 auto}
+  .run-models{color:var(--txt);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .run-scores{display:flex;gap:8px;flex:0 0 auto}
+  .run-score{font-family:var(--disp);font-size:16px;color:var(--txt)}
+  .run-score small{font-family:var(--mono);font-size:10px;color:var(--dim)}
+  .run-meta{color:var(--dim2);font-size:10.5px;flex:0 0 auto}
+  .run-actions{display:flex;gap:6px;flex:0 0 auto;margin-left:auto}
+  .run-btn{font-family:var(--mono);font-size:10px;padding:4px 9px;background:transparent;
+    border:1px solid var(--line2);color:var(--dim);cursor:pointer;transition:.15s}
+  .run-btn:hover{color:var(--txt);border-color:var(--dim)}
+  .run-btn.del:hover{color:var(--red);border-color:var(--red)}
+  .run-body{display:none;border-top:1px solid var(--line)}
+  .run-entry.open .run-body{display:block}
+  /* question rows inside a run */
+  .qfilters{display:flex;gap:8px;flex-wrap:wrap;padding:12px 14px;border-bottom:1px solid var(--line)}
+  .qrow{border-bottom:1px solid var(--line);border-left:3px solid transparent}
+  .qrow:last-child{border-bottom:none}
   .qrow.c{border-left-color:var(--lime)} .qrow.p{border-left-color:var(--amber-d)} .qrow.x{border-left-color:var(--red)}
-  .qhead{display:grid;grid-template-columns:54px 120px 1fr 90px 60px;gap:12px;align-items:center;
-    padding:11px 14px;cursor:pointer;font-family:var(--mono);font-size:12px}
+  .qhead{display:grid;grid-template-columns:54px 120px 1fr 90px 52px 52px;gap:12px;align-items:center;
+    padding:10px 14px;cursor:pointer;font-family:var(--mono);font-size:12px}
   .qhead:hover{background:#0d1116}
-  .qhead .qid{color:var(--amber)}
-  .qhead .qm{color:var(--dim)}
+  .qhead .qid{color:var(--amber)} .qhead .qm{color:var(--dim)}
   .qhead .qq{color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .qhead .qv{text-align:right;text-transform:uppercase;letter-spacing:.08em}
   .qv.c{color:var(--lime)} .qv.p{color:var(--amber-d)} .qv.x{color:var(--red)}
   .qhead .qs{color:var(--dim);text-align:right}
-  .qbody{display:none;padding:0 14px 16px;border-top:1px solid var(--line)}
+  .qbody{display:none;padding:14px;border-top:1px solid var(--line);background:#070809}
   .qrow.open .qbody{display:block}
-  .qbody dl{display:grid;grid-template-columns:120px 1fr;gap:8px 16px;margin:14px 0 0;font-size:13px}
-  .qbody dt{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
-  .qbody dd{margin:0;line-height:1.55}
-  .qbody .ans{font-family:var(--mono);font-size:12.5px;background:#070809;border:1px solid var(--line);
-    padding:11px 13px;white-space:pre-wrap;word-break:break-word}
+  .qbody dl{display:grid;grid-template-columns:110px 1fr;gap:10px 18px;font-size:13px}
+  .qbody dt{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding-top:2px}
+  .qbody dd{margin:0;line-height:1.6}
+  .qbody .ans{font-family:var(--mono);font-size:12.5px;background:#0a0b0e;border:1px solid var(--line);
+    padding:12px 14px;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow-y:auto}
   .qbody .ref{color:var(--lime)}
+  .judge-box{background:rgba(180,140,255,.05);border:1px solid rgba(180,140,255,.2);padding:12px 14px;font-size:13px;line-height:1.6}
+  .judge-box .verdict-badge{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+    padding:3px 8px;border:1px solid currentColor;margin-right:10px}
+  .judge-box .verdict-badge.c{color:var(--lime)} .judge-box .verdict-badge.p{color:var(--amber-d)} .judge-box .verdict-badge.x{color:var(--red)}
 
   /* ---------- corpus ---------- */
   .corp{display:grid;grid-template-columns:300px 1fr;gap:18px}
@@ -194,6 +225,34 @@
   .docview code{font-family:var(--mono);color:var(--amber)}
   .docview strong{color:var(--txt)}
   .hidden{display:none}
+  /* ---------- log renderer ---------- */
+  .log-block{border-bottom:1px solid var(--line);padding:14px 18px}
+  .log-block:last-child{border-bottom:none}
+  .log-run-header{background:rgba(255,180,84,.06);padding:12px 18px;border-bottom:1px solid var(--line2);
+    font-family:var(--mono);font-size:12px;color:var(--amber);letter-spacing:.08em}
+  .log-q-header{display:flex;gap:14px;align-items:baseline;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .log-q-id{color:var(--amber);font-weight:600;font-size:13px}
+  .log-q-meta{color:var(--dim2);font-size:10.5px}
+  .log-label{display:inline-block;font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+    padding:2px 7px;border:1px solid currentColor;margin-right:8px;vertical-align:middle;opacity:.8}
+  .log-label.q{color:var(--cyan)} .log-label.a{color:var(--txt)} .log-label.j{color:var(--violet)}
+  .log-label.t{color:#6aa0c0} .log-label.r{color:var(--lime)}
+  .log-section{margin:8px 0;line-height:1.65}
+  .log-text{white-space:pre-wrap;word-break:break-word}
+  .log-think{color:var(--dim2);font-style:italic;font-size:11px;line-height:1.55;
+    background:rgba(0,0,0,.3);border-left:2px solid var(--line2);padding:8px 12px;margin:6px 0;white-space:pre-wrap;word-break:break-word}
+  .log-tool-line{color:#6aa0c0;font-size:11.5px}
+  .log-verdict{display:flex;align-items:flex-start;gap:10px;margin-top:10px;padding:10px 12px;border:1px solid var(--line2)}
+  .log-verdict.c{border-color:rgba(139,227,77,.3);background:rgba(139,227,77,.04)}
+  .log-verdict.p{border-color:rgba(240,151,42,.3);background:rgba(240,151,42,.04)}
+  .log-verdict.x{border-color:rgba(255,107,107,.3);background:rgba(255,107,107,.04)}
+  .log-verdict-badge{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+    padding:3px 8px;border:1px solid currentColor;white-space:nowrap;flex:0 0 auto}
+  .log-verdict.c .log-verdict-badge{color:var(--lime)} .log-verdict.p .log-verdict-badge{color:var(--amber-d)} .log-verdict.x .log-verdict-badge{color:var(--red)}
+  .log-verdict-body{font-size:12.5px;line-height:1.55}
+  .log-verdict-judge{color:var(--dim);font-size:11px;margin-top:4px}
+  .log-timing{font-family:var(--mono);font-size:10.5px;color:var(--dim2);margin-left:auto;white-space:nowrap;flex:0 0 auto;padding-top:2px}
+
   .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:50;
     font-family:var(--mono);font-size:12px;background:var(--panel);border:1px solid var(--amber);
     color:var(--txt);padding:12px 18px;opacity:0;transition:.3s;pointer-events:none}
@@ -220,8 +279,12 @@
   <nav id="tabs">
     <button data-tab="control" class="active">Control</button>
     <button data-tab="leaderboard">Leaderboard</button>
-    <button data-tab="questions">Questions</button>
+    <button data-tab="questions">Logs</button>
     <button data-tab="corpus">Corpus</button>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;color:var(--dim)">
+      <span style="letter-spacing:.1em;text-transform:uppercase">Benchmark</span>
+      <div id="langbtns" style="display:flex;gap:4px"></div>
+    </div>
   </nav>
 
   <!-- CONTROL -->
@@ -240,8 +303,13 @@
               <span class="note">required — no Claude, no test</span></div>
           </div>
           <div class="field">
-            <label>Questions limit (0 = all)</label>
-            <input type="number" id="limit" min="0" value="0" />
+            <label>Questions limit</label>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input type="number" id="limit" min="0" value="0" />
+              <button class="preset-btn active" data-val="0">All</button>
+              <button class="preset-btn" data-val="10">10Q short</button>
+              <button class="preset-btn" data-val="5">5Q smoke</button>
+            </div>
           </div>
           <div class="field">
             <label>Options</label>
@@ -257,7 +325,7 @@
         </div>
       </div>
       <div class="panel">
-        <div class="panel-h">Live Console <span class="tag" id="constag">idle</span></div>
+        <div class="panel-h">Live Console <span class="tag" id="constag">idle</span><span id="curmodel" style="font-family:var(--mono);font-size:11px;color:var(--amber);margin-left:10px;letter-spacing:.06em"></span><span class="timer hidden" id="timer"></span><span id="consbench" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.08em"></span></div>
         <div class="console" id="console"><span class="dim">// awaiting launch…</span></div>
       </div>
     </div>
@@ -266,22 +334,29 @@
   <!-- LEADERBOARD -->
   <section id="leaderboard" class="hidden">
     <div class="selectbar">
-      <span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.1em">RUN</span>
+      <span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.1em">VIEW</span>
       <select id="lbselect"></select>
       <span id="lbmeta" style="font-family:var(--mono);font-size:11px;color:var(--dim)"></span>
+      <span id="lbcurmodel" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--amber);letter-spacing:.06em"></span>
     </div>
     <div class="panel"><div id="lbbody"></div></div>
   </section>
 
-  <!-- QUESTIONS -->
+  <!-- LOGS -->
   <section id="questions" class="hidden">
-    <div class="selectbar">
-      <span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.1em">RUN</span>
-      <select id="qselect"></select>
-    </div>
-    <div class="qfilters" id="qfilters"></div>
-    <div id="qbody"></div>
+    <div id="runslist"></div>
   </section>
+
+  <!-- LOG VIEWER MODAL -->
+  <div id="logmodal" style="display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.88);overflow:auto;padding:30px">
+    <div style="max-width:960px;margin:0 auto;background:var(--panel);border:1px solid var(--line2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:1">
+        <span id="logmodaltitle" style="font-family:var(--mono);font-size:12px;color:var(--amber)"></span>
+        <button onclick="$('#logmodal').style.display='none'" style="font-family:var(--mono);font-size:12px;background:transparent;border:1px solid var(--line2);color:var(--dim);padding:6px 12px;cursor:pointer">✕ Close</button>
+      </div>
+      <div id="logcontent" style="font-family:var(--mono);font-size:12px;line-height:1.7;padding:0;overflow-y:auto;color:var(--txt);margin:0"></div>
+    </div>
+  </div>
 
   <!-- CORPUS -->
   <section id="corpus" class="hidden">
@@ -298,6 +373,9 @@ const $ = s => document.querySelector(s);
 const el = (t,c,h)=>{const e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e;};
 const VMAP = {correct:'c', partial:'p', incorrect:'x'};
 let STATE=null, QCACHE=null, RUNCACHE={};
+let _activeConfig='config.yaml', _loadedCorpusConfig=null;
+const CFG_LABEL = {'config.yaml':'EN 🇪🇺','config_he.yaml':'HE 🇮🇱'};
+const isHebrew = ()=> _activeConfig==='config_he.yaml';
 
 function toast(msg){const t=$('#toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2600);}
 
@@ -306,6 +384,11 @@ async function loadState(){
   renderStats(); renderModels(); renderRunSelectors();
   $('#cfgtag').textContent = 'ctx '+STATE.lmstudio.context_length;
   if(STATE.judge && STATE.judge.model) $('#judgemodel').textContent = STATE.judge.model;
+  // reflect active benchmark in subtitle
+  const benchLabel = CFG_LABEL[_activeConfig]||_activeConfig;
+  $('.sub').textContent = `Document-QA Benchmark · ${benchLabel} · LM Studio × MCP × Claude Judge`;
+  // console panel title
+  $('#consbench').textContent = benchLabel;
 }
 
 function renderStats(){
@@ -336,7 +419,19 @@ function renderModels(){
 }
 
 $('#opt-manage').onclick=()=>{$('#opt-manage').classList.toggle('on'); updateHint();};
-$('#limit').oninput=updateHint;
+$('#limit').oninput=()=>{
+  document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active'));
+  const cur=+$('#limit').value;
+  const match=[...document.querySelectorAll('.preset-btn')].find(b=>+b.dataset.val===cur);
+  if(match) match.classList.add('active');
+  updateHint();
+};
+document.querySelectorAll('.preset-btn').forEach(b=>b.onclick=()=>{
+  $('#limit').value=b.dataset.val;
+  document.querySelectorAll('.preset-btn').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  updateHint();
+});
 
 function gatherCfg(){
   const models=[...document.querySelectorAll('.mrow.sel')].map(r=>r.dataset.label);
@@ -366,7 +461,68 @@ $('#launch').onclick=async()=>{
 };
 
 let streaming=false;
+let _curModel=null, _liveInterval=null;
+
 function setConsTag(txt){ $('#constag').textContent=txt; }
+
+function setCurModel(name){
+  _curModel=name;
+  const txt = name ? '● '+name : '';
+  ['#curmodel','#lbcurmodel'].forEach(id=>{ const s=$(id); if(s) s.textContent=txt; });
+}
+
+function startLivePolling(){
+  if(_liveInterval) return;
+  _liveInterval=setInterval(async()=>{
+    try{
+      const res=await fetch('/api/run/live');
+      if(!res.ok){ stopLivePolling(); return; }   // run ended — clean up immediately
+      const d=await res.json();
+      const activeTab=$('#tabs button.active')?.dataset?.tab;
+      if(activeTab==='leaderboard') renderLeaderboard('run-live.json', d);
+      if(activeTab==='questions')   renderQuestions('run-live.json', d);
+      injectLiveOption();
+    }catch(e){ stopLivePolling(); }
+  }, 3000);
+}
+
+function stopLivePolling(){
+  clearInterval(_liveInterval); _liveInterval=null;
+  removeLiveOption();
+  setCurModel(null);
+}
+
+function injectLiveOption(){
+  for(const sel of ['#lbselect','#qselect']){
+    const s=$(sel);
+    if(!s.querySelector('option[value="run-live.json"]')){
+      const o=el('option',null,'▶ LIVE (running…)'); o.value='run-live.json';
+      s.insertBefore(o, s.firstChild);
+      s.value='run-live.json';
+    }
+  }
+}
+
+function removeLiveOption(){
+  for(const sel of ['#lbselect','#qselect']){
+    const s=$(sel), o=s.querySelector('option[value="run-live.json"]');
+    if(o){ const wasSelected=s.value==='run-live.json'; o.remove(); if(wasSelected&&s.options.length) s.value=s.options[0].value; }
+  }
+}
+
+let _timerInterval=null, _timerStart=null;
+function fmtElapsed(ms){
+  const s=Math.floor(ms/1000), m=Math.floor(s/60), h=Math.floor(m/60);
+  return h>0 ? `${h}:${String(m%60).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
+             : `${String(m).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+}
+function startTimer(){
+  _timerStart=Date.now(); $('#timer').classList.remove('hidden');
+  _timerInterval=setInterval(()=>{ $('#timer').textContent=fmtElapsed(Date.now()-_timerStart); }, 1000);
+}
+function stopTimer(){
+  clearInterval(_timerInterval); _timerInterval=null;
+}
 
 function classFor(line){
   const t=line.trim();
@@ -396,7 +552,9 @@ function appendChunk(text){
   while(i<text.length){
     const nl=text.indexOf('\n', i);
     if(nl===-1){ pending+=text.slice(i); break; }
-    pending+=text.slice(i,nl); finalizeLine(pending); pending=""; i=nl+1;
+    pending+=text.slice(i,nl);
+    const mm=pending.trim().match(/^===\s+(.+?)\s+\(/); if(mm) setCurModel(mm[1]);
+    finalizeLine(pending); pending=""; i=nl+1;
   }
   if(pending.length){
     if(!pendingSpan){ pendingSpan=el('span','a',''); c.appendChild(pendingSpan); }
@@ -413,18 +571,51 @@ $('#stop').onclick=async()=>{
 };
 
 function streamRun(){
-  if(streaming) return;                 // one stream at a time
+  if(streaming) return;
+  // Defensively close any lingering EventSource before opening a new one.
+  if(window._es){ try{ window._es.close(); }catch(e){} window._es=null; }
+  if(window._wd){ clearInterval(window._wd); window._wd=null; }
   streaming=true; setConsTag('running'); $('#launch').disabled=true; $('#stop').disabled=false;
-  resetConsole();                        // SSE replays the full buffer from the start
+  resetConsole(); startTimer(); startLivePolling();
+  let _lastMsg=Date.now();
   const es=new EventSource('/api/run/stream');
-  es.onmessage=e=>{ appendChunk(JSON.parse(e.data)); };
+  window._es=es;
+  es.onmessage=e=>{
+    _lastMsg=Date.now();
+    const txt=JSON.parse(e.data);
+    if(txt) appendChunk(txt);           // keepalive comments arrive as empty strings — skip
+  };
   es.addEventListener('done',async e=>{
-    es.close(); streaming=false; $('#launch').disabled=false; $('#stop').disabled=true; setConsTag('done');
-    toast('run complete'); await loadState();
-    if(STATE.runs[0]){$('#lbselect').value=STATE.runs[0].name; $('#qselect').value=STATE.runs[0].name;
-      renderLeaderboard(STATE.runs[0].name); }
+    es.close(); if(window._es===es) window._es=null;
+    if(window._wd){ clearInterval(window._wd); window._wd=null; }
+    streaming=false; stopTimer(); stopLivePolling();
+    $('#launch').disabled=false; $('#stop').disabled=true; setConsTag('done');
+    toast('run complete');
+    await loadState();
+    await loadPartialRuns();
+    if(STATE.runs[0]){ $('#lbselect').value=STATE.runs[0].name; renderLeaderboard(STATE.runs[0].name); }
+    if($('#tabs button.active')?.dataset?.tab==='questions') renderRunsList();
   });
-  es.onerror=()=>{es.close(); streaming=false; $('#launch').disabled=false; $('#stop').disabled=true; setConsTag('disconnected');};
+  es.onerror=()=>{
+    es.close(); if(window._es===es) window._es=null;
+    if(window._wd){ clearInterval(window._wd); window._wd=null; }
+    streaming=false; stopTimer(); stopLivePolling();
+    $('#launch').disabled=false; $('#stop').disabled=true; setConsTag('disconnected');
+    loadState().then(()=>{ loadPartialRuns().then(()=>{ if($('#tabs button.active')?.dataset?.tab==='questions') renderRunsList(); }); });
+  };
+  // Watchdog: keepalives arrive every 0.4s, so >15s of true silence means a
+  // dead connection — reconnect. (Slow generation still sends keepalives.)
+  window._wd=setInterval(async()=>{
+    if(!streaming){ clearInterval(window._wd); window._wd=null; return; }
+    if(Date.now()-_lastMsg > 15000){
+      try{ es.close(); }catch(e){}
+      if(window._es===es) window._es=null;
+      streaming=false; stopLivePolling(); clearInterval(window._wd); window._wd=null;
+      $('#launch').disabled=false; $('#stop').disabled=true;
+      setConsTag('reconnecting…');
+      setTimeout(()=>{ if(!streaming) streamRun(); }, 500);
+    }
+  }, 3000);
 }
 
 // htop-style live RAM meter. Polls the same "available memory" figure the model
@@ -455,103 +646,323 @@ setInterval(async()=>{
 
 /* ---------- run selectors shared by leaderboard + questions ---------- */
 function renderRunSelectors(){
-  for(const sel of ['#lbselect','#qselect']){
-    const s=$(sel); const cur=s.value; s.innerHTML='';
-    if(!STATE.runs.length){ s.appendChild(el('option',null,'— no runs yet —')); continue; }
-    for(const r of STATE.runs){ const o=el('option',null,`${r.name.replace('run-','').replace('.json','')}  ·  ${r.models.map(m=>m.label).join(', ').slice(0,40)}`); o.value=r.name; s.appendChild(o); }
-    if(cur) s.value=cur;
-  }
-  $('#lbselect').onchange=e=>renderLeaderboard(e.target.value);
-  $('#qselect').onchange=e=>renderQuestions(e.target.value);
-  if(STATE.runs.length){ renderLeaderboard(STATE.runs[0].name); }
+  const validNames = new Set([...STATE.runs.map(r=>r.name), 'aggregate']);
+  // leaderboard selector — has "Best of all runs" aggregate option
+  const lb=$('#lbselect');
+  const lbCur = validNames.has(lb.value) ? lb.value : 'aggregate';
+  lb.innerHTML='';
+  if(STATE.runs.length){
+    const agg=el('option',null,'★ Best of all runs'); agg.value='aggregate'; lb.appendChild(agg);
+    for(const r of STATE.runs){ const o=el('option',null,`${r.name.replace('run-','').replace('.json','')}  ·  ${r.models.map(m=>m.label).join(', ').slice(0,40)}`); o.value=r.name; lb.appendChild(o); }
+    lb.value=lbCur;
+  } else { lb.appendChild(el('option',null,'— no runs yet —')); }
+
+  lb.onchange=e=>renderLeaderboard(e.target.value);
+  if(STATE.runs.length){ renderLeaderboard(lbCur); }
   else { $('#lbbody').innerHTML='<div class="empty">No runs yet — launch one from the Control tab.</div>'; }
 }
 
-async function getRun(name){ if(RUNCACHE[name]) return RUNCACHE[name];
-  const d=await (await fetch('/api/runs/'+name)).json(); RUNCACHE[name]=d; return d; }
+async function getRun(name, data){
+  if(data) return data;
+  if(RUNCACHE[name]) return RUNCACHE[name];
+  const url = name==='run-live.json' ? '/api/run/live'
+            : name==='aggregate'     ? '/api/runs/aggregate'
+            : '/api/runs/'+name;
+  const d=await (await fetch(url)).json();
+  if(name!=='run-live.json' && name!=='aggregate') RUNCACHE[name]=d;
+  return d;
+}
 
-async function renderLeaderboard(name){
+async function renderLeaderboard(name, data){
   if(!name) return;
-  const d=await getRun(name);
+  const d=await getRun(name, data);
   const board=[...d.models].sort((a,b)=>b.pct-a.pct);
-  $('#lbmeta').textContent = `started ${d.started} · ${board.length} model(s)`;
+  const metaLabel = d.aggregate ? `best of ${STATE.runs.length} run(s) · ${board.length} model(s)`
+                                : `${d.started} · ${board.length} model(s)`+(d.live?' · LIVE':'');
+  $('#lbmeta').textContent = metaLabel;
   const body=$('#lbbody'); body.innerHTML='';
   const max=Math.max(1,...board.map(m=>m.pct));
   board.forEach((m,i)=>{
     const row=el('div','bar-row'+(i===0?' first':''));
+    const liveTag = m.live ? ' <span style="font-size:10px;color:var(--amber);animation:pulse 1s infinite">▶ LIVE</span>' : '';
+    const nLabel = m.n_scored != null && m.n_scored !== m.n
+      ? `${m.n_scored}/${m.n}Q scored` : `${m.n||'?'}Q`;
+    const progress = m.live && m.n
+      ? ` <span style="color:var(--dim2);font-size:10px">${m.n}/${STATE?.testset?.count||'?'} Q</span>`
+      : m.best_run
+      ? ` <span style="color:var(--dim2);font-size:10px">${m.best_run.replace('run-','').replace('.json','')}</span>`
+      : ` <span style="color:var(--dim2);font-size:10px">${nLabel}</span>`;
+    const fmtDur = s => s>=60 ? `${Math.floor(s/60)}m ${s%60}s` : `${s}s`;
+    const timeCell = m.duration_s != null
+      ? `${fmtDur(m.duration_s)}<br><span style="color:var(--dim2)">${m.avg_q_s}s ±${m.std_q_s}s</span>`
+      : `<span style="color:var(--dim2)">—</span>`;
     row.innerHTML=`
       <div class="rank">${String(i+1).padStart(2,'0')}</div>
-      <div class="mname">${m.label}<small>${m.id||''}</small></div>
+      <div class="mname">${m.label}${liveTag}<small>${m.id||''}${progress}</small></div>
       <div class="track"><div class="fill" style="width:0%"></div></div>
       <div class="pct">${m.pct}<small>%</small></div>
-      <div class="chips"><span class="chip c">${m.correct}✓</span><span class="chip p">${m.partial}~</span><span class="chip x">${m.incorrect}✗</span></div>
-      <div class="steps">${m.avg_steps}<br><span style="color:var(--dim2)">steps</span></div>`;
+      <div class="chips">
+        <span class="chip c">${m.correct}✓</span>
+        <span class="chip p">${m.partial}~</span>
+        <span class="chip x">${m.incorrect}✗</span>
+        ${m.model_errors ? `<span class="chip x" title="model crashed" style="opacity:.7">${m.model_errors}💥</span>` : ''}
+        ${m.judge_errors ? `<span class="chip" title="answered but judge timed out — excluded from score" style="color:var(--dim);opacity:.7">${m.judge_errors}⚖</span>` : ''}
+      </div>
+      <div class="steps">${m.avg_steps}<br><span style="color:var(--dim2)">steps</span></div>
+      <div class="steps">${timeCell}</div>`;
     body.appendChild(row);
     requestAnimationFrame(()=>{ setTimeout(()=>{ row.querySelector('.fill').style.width=(m.pct)+'%'; }, 60*i); });
   });
 }
 
-async function renderQuestions(name){
-  if(!name){ $('#qbody').innerHTML='<div class="empty">No run selected.</div>'; return; }
-  const d=await getRun(name);
-  if(!QCACHE){ QCACHE = await (await fetch('/api/questions')).json(); }
-  const qmap={}; QCACHE.questions.forEach(q=>qmap[q.id]=q);
-  // flatten rows
-  const rows=[];
-  d.models.forEach(m=> (m.rows||[]).forEach(r=> rows.push({...r, model:m.label})));
-  // filters
-  const modelOpts=['all',...d.models.map(m=>m.label)];
-  buildFilters(modelOpts);
-  window.__qrows=rows; window.__qmap=qmap;
-  applyQFilters();
+let _rlDebounce=null, _rlRunning=false;
+function renderRunsList(){
+  clearTimeout(_rlDebounce);
+  _rlDebounce=setTimeout(_doRenderRunsList, 120);
+}
+async function _doRenderRunsList(){
+  if(_rlRunning) return;
+  _rlRunning=true;
+  try{ await _renderRunsListInner(); }finally{ _rlRunning=false; }
+}
+async function _renderRunsListInner(){
+  if(!QCACHE) try{ QCACHE=await (await fetch('/api/questions')).json(); }catch(e){}
+  const qmap={}; (QCACHE?.questions||[]).forEach(q=>qmap[q.id]=q);
+
+  const list=$('#runslist'); list.innerHTML='';
+
+  const allRuns=[
+    ...STATE.runs.map(r=>({type:'complete', ...r})),
+    ...(window.__partialLogs||[]).map(l=>({type:'partial', name:l.name.replace('.log','.json'), logName:l.name, size:l.size, models:[]}))
+  ];
+  if(!allRuns.length){ list.innerHTML='<div class="empty">No runs yet — launch one from the Control tab.</div>'; return; }
+
+  for(const run of allRuns){
+    const entry=el('div','run-entry'+(run.type==='partial'?' partial':''));
+    const dateStr=(run.name||'').replace('run-','').replace('.json','').replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/,'$1-$2-$3 $4:$5:$6');
+    const modelSummary=run.models.map(m=>`${m.label}${m.pct!=null?' '+m.pct+'%':''}`).join('  ·  ');
+    const nQ=run.models.reduce((s,m)=>s+(m.n||0),0);
+
+    let headInner=`<span class="run-chevron">▶</span>
+      <span class="run-date">${dateStr}</span>
+      <span class="run-models">${run.type==='partial'?'<span style="color:var(--dim2)">[partial]</span> '+((run.size/1024).toFixed(1))+'KB':modelSummary}</span>
+      ${run.type==='complete'?`<span class="run-meta">${nQ}Q</span>`:''}
+      <span class="run-actions">
+        <button class="run-btn log-btn" data-log="${run.type==='partial'?run.logName:(run.name||'').replace('.json','.log')}">📋 log</button>
+        ${run.type==='complete'
+          ? `<button class="run-btn del" data-run="${run.name}">🗑</button>`
+          : `<button class="run-btn del" data-log="${run.logName}">🗑</button>`}
+      </span>`;
+
+    const head=el('div','run-head'); head.innerHTML=headInner;
+    const body=el('div','run-body');
+    let loaded=false;
+
+    head.onclick=async(e)=>{
+      if(e.target.closest('.run-btn')) return;
+      entry.classList.toggle('open');
+      if(entry.classList.contains('open') && !loaded){
+        loaded=true;
+        if(run.type==='partial'){
+          body.innerHTML='<div style="padding:20px;font-family:var(--mono);font-size:12px;color:var(--dim)">Partial run — no results data. Use 📋 log to view the raw output.</div>';
+          return;
+        }
+        body.innerHTML='<div style="padding:14px;font-family:var(--mono);font-size:11px;color:var(--dim)">Loading…</div>';
+        let d; try{ d=await getRun(run.name); }catch(ex){ body.innerHTML='<div class="empty">Failed to load run.</div>'; return; }
+        body.innerHTML='';
+        // filters bar
+        const filters=el('div','qfilters');
+        const modelOpts=['all',...d.models.map(m=>m.label)];
+        const QF={model:'all',verdict:'all',difficulty:'all'};
+        const rows=[]; d.models.forEach(m=>(m.rows||[]).forEach(r=>rows.push({...r,model:m.label})));
+        const qlist=el('div');
+        const applyF=()=>{
+          qlist.innerHTML='';
+          const filt=rows.filter(r=>(QF.model==='all'||r.model===QF.model)&&(QF.verdict==='all'||r.verdict===QF.verdict)&&(QF.difficulty==='all'||r.difficulty===QF.difficulty));
+          if(!filt.length){qlist.innerHTML='<div style="padding:20px;text-align:center;font-family:var(--mono);font-size:12px;color:var(--dim)">No matching rows.</div>';return;}
+          for(const r of filt){
+            const q=qmap[r.id]||{}; const v=VMAP[r.verdict]||'x';
+            const rtl=isHebrew()?' dir="rtl"':'';
+            const elapsed=r.elapsed_s!=null?`${r.elapsed_s}s`:'—';
+            const qrow=el('div','qrow '+v);
+            const judgeHtml=`<div class="judge-box"><span class="verdict-badge ${v}">${r.verdict}</span>${escapeHtml(r.rationale||'(no rationale)')}<span style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:12px">[${r.grader||'?'}]</span></div>`;
+            qrow.innerHTML=`
+              <div class="qhead">
+                <span class="qid">${r.id}</span><span class="qm">${r.model}</span>
+                <span class="qq"${rtl}>${escapeHtml(q.question||'')}</span>
+                <span class="qv ${v}">${r.verdict}</span>
+                <span class="qs">${r.steps}⟳</span><span class="qs">${elapsed}</span>
+              </div>
+              <div class="qbody"><dl${rtl}>
+                <dt>Question</dt><dd>${escapeHtml(q.question||'')}</dd>
+                <dt>Answer</dt><dd><div class="ans"${rtl}>${escapeHtml(r.answer||'(none)')}</div></dd>
+                <dt>Judge</dt><dd>${judgeHtml}</dd>
+                <dt>Reference</dt><dd class="ref"${rtl}>${escapeHtml(q.reference_answer||'')}</dd>
+                <dt>Key facts</dt><dd>${(q.key_facts||[]).map(k=>'<code>'+escapeHtml(k)+'</code>').join(' ')}</dd>
+                <dt>Meta</dt><dd style="font-family:var(--mono);font-size:11px;color:var(--dim)">doc:${r.source_doc} · finish:${r.finish} · tools:${r.n_tool_calls} · steps:${r.steps} · time:${elapsed}${r.error?'<br><span style="color:var(--red)">'+escapeHtml(r.error)+'</span>':''}</dd>
+              </dl></div>`;
+            qrow.querySelector('.qhead').onclick=()=>qrow.classList.toggle('open');
+            qlist.appendChild(qrow);
+          }
+        };
+        const mk=(key,opts,prefix)=>{const w=el('div');const s=el('select');opts.forEach(o=>{const op=el('option',null,prefix+o);op.value=o;s.appendChild(op);});s.value=QF[key];s.onchange=()=>{QF[key]=s.value;applyF();};w.appendChild(s);return w;};
+        filters.appendChild(mk('model',modelOpts,'model: '));
+        filters.appendChild(mk('verdict',['all','correct','partial','incorrect'],'verdict: '));
+        filters.appendChild(mk('difficulty',['all','easy','medium','hard'],'diff: '));
+        body.appendChild(filters); body.appendChild(qlist); applyF();
+      }
+    };
+
+    head.querySelectorAll('.log-btn').forEach(btn=>btn.onclick=async()=>{
+      const logName=btn.dataset.log;
+      try{
+        const r=await fetch('/api/logs/'+logName);
+        if(!r.ok){toast('no log file for this run'); return;}
+        $('#logmodaltitle').textContent=logName;
+        $('#logcontent').innerHTML=renderLogText(await r.text());
+        $('#logmodal').style.display='block';
+      }catch(e){toast('failed to load log');}
+    });
+    head.querySelectorAll('.del').forEach(btn=>btn.onclick=async()=>{
+      const isPartial = !!btn.dataset.log;
+      const label = isPartial ? btn.dataset.log : btn.dataset.run;
+      if(!confirm(`Delete ${label}?`)) return;
+      let r;
+      if(isPartial){
+        r=await fetch('/api/logs/'+btn.dataset.log,{method:'DELETE'});
+      } else {
+        r=await fetch('/api/runs/'+btn.dataset.run,{method:'DELETE'});
+        delete RUNCACHE[btn.dataset.run];
+      }
+      if(!r.ok){toast('delete failed');return;}
+      toast('deleted'); await loadState(); await loadPartialRuns(); renderRunsList();
+    });
+
+    entry.appendChild(head); entry.appendChild(body); list.appendChild(entry);
+  }
 }
 
-let QF={model:'all',verdict:'all',difficulty:'all'};
-function buildFilters(models){
-  const f=$('#qfilters'); f.innerHTML='';
-  const mk=(label,key,opts)=>{
-    const wrap=el('div'); const s=el('select');
-    opts.forEach(o=>{const op=el('option',null,(key==='model'?'model: ':label+': ')+o); op.value=o; s.appendChild(op);});
-    s.value=QF[key]; s.onchange=()=>{QF[key]=s.value; applyQFilters();}; wrap.appendChild(s); return wrap;
-  };
-  f.appendChild(mk('model','model',models));
-  f.appendChild(mk('verdict','verdict',['all','correct','partial','incorrect']));
-  f.appendChild(mk('diff','difficulty',['all','easy','medium','hard']));
+async function loadPartialRuns(){
+  try{
+    const logs=await (await fetch('/api/logs')).json();
+    window.__partialLogs=logs.filter(l=>!l.has_json);
+  }catch(e){}
 }
-function applyQFilters(){
-  const rows=window.__qrows||[], qmap=window.__qmap||{};
-  const b=$('#qbody'); b.innerHTML='';
-  const filt=rows.filter(r=>(QF.model==='all'||r.model===QF.model)
-    &&(QF.verdict==='all'||r.verdict===QF.verdict)&&(QF.difficulty==='all'||r.difficulty===QF.difficulty));
-  if(!filt.length){ b.innerHTML='<div class="empty">No matching rows.</div>'; return; }
-  for(const r of filt){
-    const q=qmap[r.id]||{}; const v=VMAP[r.verdict]||'x';
-    const row=el('div','qrow '+v);
-    row.innerHTML=`
-      <div class="qhead">
-        <span class="qid">${r.id}</span>
-        <span class="qm">${r.model}</span>
-        <span class="qq">${escapeHtml(q.question||'')}</span>
-        <span class="qv ${v}">${r.verdict}</span>
-        <span class="qs">${r.steps}⟳</span>
-      </div>
-      <div class="qbody">
-        <dl>
-          <dt>Question</dt><dd>${escapeHtml(q.question||'')}</dd>
-          <dt>Reference</dt><dd class="ref">${escapeHtml(q.reference_answer||'')}</dd>
-          <dt>Key facts</dt><dd>${(q.key_facts||[]).map(k=>'<code>'+escapeHtml(k)+'</code>').join(' ')}</dd>
-          <dt>Answer</dt><dd><div class="ans">${escapeHtml(r.answer||'(none)')}</div></dd>
-          <dt>Judge</dt><dd>${r.verdict} — ${escapeHtml(r.rationale||'')} <span style="color:var(--dim2)">[${r.grader}]</span></dd>
-          <dt>Source / meta</dt><dd style="color:var(--dim);font-family:var(--mono);font-size:11.5px">doc=${r.source_doc} · finish=${r.finish} · tool_calls=${r.n_tool_calls}${r.error?' · err='+escapeHtml(r.error):''}</dd>
-        </dl>
-      </div>`;
-    row.querySelector('.qhead').onclick=()=>row.classList.toggle('open');
-    b.appendChild(row);
+
+// While the Logs tab is open, refresh the list every 5s so new/partial runs appear.
+setInterval(async()=>{
+  if($('#tabs button.active')?.dataset?.tab!=='questions') return;
+  const prev=JSON.stringify(window.__partialLogs);
+  await loadPartialRuns();
+  if(JSON.stringify(window.__partialLogs)!==prev) renderRunsList();
+}, 5000);
+
+// keep renderQuestions as a no-op alias used by live polling
+async function renderQuestions(name, data){ /* handled by renderRunsList now */ }
+
+function renderLogText(raw){
+  const lines = raw.split('\n');
+  let html = '';
+  let i = 0;
+
+  const e = s => escapeHtml(s);
+  const VMAP2 = {'✓':'c','~':'p','✗':'x'};
+
+  while(i < lines.length){
+    const line = lines[i]; const t = line.trim();
+
+    // Run header === model (id) ===
+    if(t.startsWith('===')){
+      html += `<div class="log-run-header">${e(t)}</div>`;
+      i++; continue;
+    }
+
+    // Question separator + header block
+    if(t.startsWith('---') || /^q\d+\s·/.test(t)){
+      if(t.startsWith('---')){ i++; continue; } // skip separator line
+      // q01 · easy · doc.md
+      const parts = t.split('·').map(s=>s.trim());
+      const qid = parts[0]||'', diff = parts[1]||'', doc = parts[2]||'';
+      // collect lines until next separator or model header
+      i++;
+      let questionText='', answerLines=[], thinkBlocks=[], toolLines=[], refText='', judgeRaw='', verdictLine='', judgeDetail='';
+      let curThink=[];
+
+      const flushThink=()=>{ if(curThink.length){ thinkBlocks.push(curThink.join('\n')); curThink=[]; } };
+
+      while(i < lines.length){
+        const l = lines[i]; const tt = l.trim();
+        if(tt.startsWith('---') || /^q\d+\s·/.test(tt) || tt.startsWith('===')){
+          flushThink(); break;
+        }
+        if(tt.startsWith('Q:')){ questionText = tt.slice(2).trim(); i++; continue; }
+        if(/^·\s*think:/.test(tt)){ flushThink(); i++; continue; } // think summary — skip, we show full
+        if(tt.startsWith('A:')){ flushThink(); answerLines.push(tt.slice(2).trim()); i++;
+          // collect multi-line answer
+          while(i < lines.length && lines[i].startsWith('  A:')){ answerLines.push(lines[i].trim().slice(2).trim()); i++; }
+          continue;
+        }
+        if(tt.startsWith('ref:')){ flushThink(); refText=tt.slice(4).trim(); i++; continue; }
+        if(tt.startsWith('judge raw:')){ judgeRaw=tt.slice(10).trim(); i++; continue; }
+        if(tt.startsWith('→') || tt.startsWith('↳')){ flushThink(); toolLines.push(tt); i++; continue; }
+        if(/^[✓✗~]/.test(tt)){ flushThink(); verdictLine=tt; i++; continue; }
+        if(tt.startsWith('judge:') && verdictLine){ judgeDetail=tt.slice(6).trim(); i++; continue; }
+        if(!answerLines.length && !tt.startsWith('loading') && tt){ curThink.push(l); }
+        i++;
+      }
+      flushThink();
+
+      let blockHtml = `<div class="log-block">`;
+      blockHtml += `<div class="log-q-header"><span class="log-q-id">${e(qid)}</span><span class="log-q-meta">${e(diff)} · ${e(doc)}</span></div>`;
+
+      if(questionText)
+        blockHtml += `<div class="log-section"><span class="log-label q">Q</span><span class="log-text">${e(questionText)}</span></div>`;
+
+      if(thinkBlocks.length)
+        blockHtml += thinkBlocks.map(b=>`<div class="log-think">${e(b)}</div>`).join('');
+
+      if(toolLines.length)
+        blockHtml += `<div class="log-section">${toolLines.map(tl=>`<div class="log-tool-line">${e(tl)}</div>`).join('')}</div>`;
+
+      if(answerLines.length)
+        blockHtml += `<div class="log-section" style="margin-top:10px"><span class="log-label a">A</span><span class="log-text">${e(answerLines.join(' '))}</span></div>`;
+
+      if(refText)
+        blockHtml += `<div class="log-section" style="font-size:11.5px"><span class="log-label r">ref</span><span class="log-text" style="color:var(--lime)">${e(refText)}</span></div>`;
+      if(judgeRaw)
+        blockHtml += `<div class="log-section" style="font-size:11px;font-family:var(--mono)"><span class="log-label j">judge raw</span><span style="color:var(--violet)">${e(judgeRaw)}</span></div>`;
+
+      if(verdictLine){
+        const vm = verdictLine.match(/^([✓✗~])\s+(\w+)\s+\(([^)]+)\)\s*—\s*judge:\s*(.*)$/);
+        const vc = vm ? VMAP2[vm[1]]||'x' : 'x';
+        const vLabel = vm ? vm[2] : verdictLine;
+        const vTiming = vm ? vm[3] : '';
+        const vJudge = vm ? vm[4] : '';
+        blockHtml += `<div class="log-verdict ${vc}">
+          <span class="log-verdict-badge">${e(vLabel)}</span>
+          <div class="log-verdict-body">
+            ${vJudge?`<div style="font-size:12px;margin-bottom:4px">${e(vJudge)}</div>`:''}
+            ${judgeDetail?`<div class="log-verdict-judge"><span class="log-label j">judge</span>${e(judgeDetail)}</div>`:''}
+          </div>
+          <span class="log-timing">${e(vTiming)}</span>
+        </div>`;
+      }
+
+      blockHtml += '</div>';
+      html += blockHtml;
+      continue;
+    }
+
+    // preamble / other lines (Preflight, MCP tools, loading, etc.)
+    if(t){ html += `<div style="padding:2px 18px;font-family:var(--mono);font-size:11px;color:var(--dim)">${e(t)}</div>`; }
+    i++;
   }
+  return html;
 }
 
 /* ---------- corpus ---------- */
 async function loadCorpus(){
+  _loadedCorpusConfig = _activeConfig;
   const docs=await (await fetch('/api/corpus')).json();
   const list=$('#doclist'); list.innerHTML='';
   docs.forEach((doc,i)=>{
@@ -560,6 +971,7 @@ async function loadCorpus(){
     it.onclick=async()=>{
       [...list.children].forEach(c=>c.classList.remove('sel')); it.classList.add('sel');
       const d=await (await fetch('/api/corpus/'+doc.file)).json();
+      $('#docview').setAttribute('dir', isHebrew()?'rtl':'ltr');
       $('#docview').innerHTML=mdToHtml(d.text);
       $('#docview').scrollTop=0;
     };
@@ -595,12 +1007,45 @@ $('#tabs').onclick=e=>{const b=e.target.closest('button'); if(!b)return;
   [...$('#tabs').children].forEach(x=>x.classList.remove('active')); b.classList.add('active');
   ['control','leaderboard','questions','corpus'].forEach(t=>$('#'+t).classList.add('hidden'));
   const tab=b.dataset.tab; $('#'+tab).classList.remove('hidden');
-  if(tab==='questions'){ const n=$('#qselect').value; if(n&&n.startsWith('run-')) renderQuestions(n); }
-  if(tab==='corpus' && !$('#doclist').children.length) loadCorpus();
+  if(tab==='questions'){ loadPartialRuns().then(renderRunsList); }
+  if(tab==='corpus'){
+    if(!$('#doclist').children.length || _loadedCorpusConfig!==_activeConfig) loadCorpus();
+  }
 };
 
+/* ---------- config / language switcher ---------- */
+async function loadConfigs(){
+  try{
+    const c = await (await fetch('/api/configs')).json();
+    _activeConfig = c.active;
+    const btns = $('#langbtns'); btns.innerHTML='';
+    for(const opt of c.options){
+      const b = el('button', null, CFG_LABEL[opt]||opt);
+      b.style.cssText='font-family:var(--mono);font-size:11px;letter-spacing:.08em;padding:5px 10px;cursor:pointer;border:1px solid var(--line2);background:transparent;color:var(--dim);transition:.15s';
+      if(opt===c.active){b.style.background='var(--amber)';b.style.color='#0a0b0e';b.style.borderColor='var(--amber)';}
+      b.onclick=async()=>{
+        if(streaming){toast('stop the run first');return;}
+        await fetch('/api/configs/'+opt,{method:'POST'});
+        // full client-side reset so nothing leaks across benchmarks
+        RUNCACHE={}; QCACHE=null; _loadedCorpusConfig=null; window.__partialLogs=[];
+        $('#doclist').innerHTML='';
+        $('#docview').innerHTML='<div class="empty">Select a document</div>';
+        $('#runslist').innerHTML='';
+        $('#lbbody').innerHTML='';
+        await loadConfigs(); await loadState(); updateHint();
+        // switch to Control tab so model list is immediately visible
+        [...$('#tabs').children].forEach(x=>x.classList.remove('active'));
+        $('[data-tab="control"]').classList.add('active');
+        ['control','leaderboard','questions','corpus'].forEach(t=>$('#'+t).classList[t==='control'?'remove':'add']('hidden'));
+        toast('Switched to '+(CFG_LABEL[opt]||opt));
+      };
+      btns.appendChild(b);
+    }
+  }catch(e){}
+}
+
 (async function init(){
-  await loadState(); updateHint();
+  await loadConfigs(); await loadState(); updateHint();
   if(STATE.run_status==='running'){ setConsTag('running','run'); $('#launch').disabled=true; streamRun(); }
 })();
 </script>
