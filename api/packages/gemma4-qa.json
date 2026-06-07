@@ -3,7 +3,7 @@
   "version": 1,
   "description": "QA over a document corpus. The model is not handed the documents — it must use filesystem tools to find and read the right file, then answer, grounded in the text.\n",
   "model": {
-    "id": "google/gemma-4-e4b",
+    "id": "gemma-4-e4b",
     "label": "gemma-4-e4b",
     "context_length": 16384
   },

@@ -40,7 +40,12 @@ const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
 // like qwen3 the tool calls come in a structured field that the stream parser
 // ignores. simulateStreaming uses the non-streaming API (which handles
 // tool_calls correctly) and wraps the result in a stream for the AI SDK.
-const ollamaModel = (name) => ollama(name, { simulateStreaming: true })
+// numCtx comes from the agent package: Ollama otherwise defaults to a 4096-token
+// window, which truncates large tool results (and the question) out of context.
+const ollamaModel = (name) => ollama(name, {
+  simulateStreaming: true,
+  numCtx: (AGENT.model && AGENT.model.context_length) || undefined,
+})
 
 // ── Agent Package (model + system prompt + tools + runtime) ───────────────────
 

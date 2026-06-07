@@ -10,6 +10,7 @@ import { PromptInput, PromptInputTextarea, PromptInputSubmit } from '@/component
 import { Tool } from '@/components/ai-elements/tool'
 import { FolderOpen, Settings2 } from 'lucide-react'
 import { HelicopterLoader } from '@/components/helicopter-loader'
+import { ResponseTimer } from '@/components/response-timer'
 import { LogsPanel } from '@/components/logs-panel'
 import { DocumentsPanel } from '@/components/documents-panel'
 import { ModelSelector } from '@/components/model-selector'
@@ -133,12 +134,13 @@ export default function ChatPage() {
             </Message>
           ))}
 
-          {/* Thinking indicator — shown while waiting for response */}
-          {isWaiting && (
-            <div className="flex gap-3 mb-6">
+          {/* Activity indicator + live timer — shown while waiting or streaming */}
+          {isBusy && (
+            <div className="flex items-center gap-3 mb-6">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
                 <HelicopterLoader className="h-5 w-5" />
               </div>
+              <ResponseTimer running={isBusy} />
             </div>
           )}
 

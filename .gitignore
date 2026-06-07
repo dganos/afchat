@@ -25,3 +25,10 @@ afchat_lab/**/__pycache__/
 afchat_lab/corpus_124/
 afchat_lab/testset/questions_124.json
 afchat_lab/*.pdf
+
+# 124 IAF flight-manual docs loaded into the Aristo library (sensitive — keep local)
+resources/documents/yanshuf-*.md
+
+# Local Ollama wiring (symlinks to the machine's binary + model store)
+resources/models
+resources/ollama
