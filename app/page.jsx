@@ -56,11 +56,11 @@ export default function ChatPage() {
   }, [messages, status])
 
   return (
-    <div className="flex flex-col h-screen">
+    <div className="flex flex-col h-screen" dir="rtl">
       {/* Header */}
       <header className="flex items-center gap-2.5 px-4 py-0 bg-background">
         <img src="./aristo-logo.png" alt="Aristo" className="h-28 w-auto select-none" draggable="false" />
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ms-auto flex items-center gap-1">
           <MemoryMeter />
           <ModelSelector />
           <button
@@ -68,7 +68,7 @@ export default function ChatPage() {
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-muted-foreground rounded-md hover:bg-muted transition-colors"
           >
             <FolderOpen className="h-3.5 w-3.5" />
-            Documents
+            מסמכים
           </button>
           <button
             onClick={() => setSettingsOpen(true)}
@@ -91,8 +91,8 @@ export default function ChatPage() {
                 className="h-80 w-auto select-none drop-shadow-[0_0_70px_rgba(59,130,246,0.45)]"
                 draggable="false"
               />
-              <p className="text-lg font-medium text-foreground">Ask me anything about your documents</p>
-              <p className="text-sm text-muted-foreground">I&apos;ll search and read them to find your answer</p>
+              <p className="text-lg font-medium text-foreground">שאל אותי כל דבר על המסמכים שלך</p>
+              <p className="text-sm text-muted-foreground">אחפש ואקרא בהם כדי למצוא את התשובה</p>
             </div>
           )}
 
@@ -155,6 +155,7 @@ export default function ChatPage() {
           value={input}
           onChange={handleInputChange}
           disabled={isBusy}
+          placeholder="שאל על המסמכים שלך…"
         />
         <PromptInputSubmit
           isStreaming={isBusy}
