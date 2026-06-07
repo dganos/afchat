@@ -14,7 +14,14 @@ scripts/.venv/
 # Lab is tracked; only generated run artifacts are ignored
 afchat_lab/results/
 afchat_lab/results_he/
+afchat_lab/results_124/
 afchat_lab/judge.log
 afchat_lab/.run.pid
 afchat_lab/.venv/
 afchat_lab/**/__pycache__/
+
+# 124 corpus = real IAF flight-manual content + derived data + reports.
+# Kept local pending explicit confirmation before tracking/pushing.
+afchat_lab/corpus_124/
+afchat_lab/testset/questions_124.json
+afchat_lab/*.pdf

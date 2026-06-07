@@ -10,10 +10,12 @@ const { PDFParse } = require('pdf-parse')
 
 const { selectDefaultModel } = require('./model-selection')
 const { availableMemory } = require('./available-memory')
+const { loadPackage, resolveOllamaModel } = require('./agent-package')
 
 // Default model is resolved lazily on the first request — Ollama may not be
 // up yet when this module loads, and we want to pick from actually-installed
-// models rather than a hardcoded name.
+// models rather than a hardcoded name. We prefer the agent package's model when
+// it is installed, otherwise fall back to auto-selection by RAM fit.
 let currentModel = null
 
 async function ensureCurrentModel() {
@@ -21,8 +23,10 @@ async function ensureCurrentModel() {
   try {
     const res = await fetch('http://localhost:11434/api/tags')
     const data = await res.json()
-    currentModel = selectDefaultModel(os.totalmem(), data.models || [])
-    if (currentModel) console.log(`[api] auto-selected model: ${currentModel}`)
+    const fromPkg = resolveOllamaModel(data.models || [], AGENT.model && AGENT.model.id)
+    currentModel = fromPkg || selectDefaultModel(os.totalmem(), data.models || [])
+    if (fromPkg) console.log(`[api] using agent-package model: ${currentModel}`)
+    else if (currentModel) console.log(`[api] package model not installed; auto-selected: ${currentModel}`)
     else console.warn('[api] no models installed — UI must pick one')
   } catch (err) {
     console.error('[api] could not auto-select model:', err.message)
@@ -38,22 +42,29 @@ const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
 // tool_calls correctly) and wraps the result in a stream for the AI SDK.
 const ollamaModel = (name) => ollama(name, { simulateStreaming: true })
 
-// ── System Prompt ────────────────────────────────────────────────────────────
+// ── Agent Package (model + system prompt + tools + runtime) ───────────────────
 
-const SYSTEM_PROMPT = `You are a document-grounded assistant. You MUST ONLY answer based on the documents in your library — NEVER from your own knowledge.
+// Built-in fallback so the app still boots if no package file is present.
+const FALLBACK_AGENT = {
+  name: 'builtin-default',
+  model: {},
+  runtime: { max_steps: 10, max_tool_result_chars: 8000, temperature: 0 },
+  tools: [{ name: 'list_directory' }, { name: 'read_text_file' }, { name: 'search_files' }],
+  toolAllowlist: ['list_directory', 'read_text_file', 'search_files'],
+  system_prompt: `You are a document-grounded assistant. You MUST ONLY answer based on the documents in your library — NEVER from your own knowledge. Use search_files to find passages and read_text_file to confirm values before answering, and answer in the same language as the question.`,
+}
 
-MANDATORY WORKFLOW for every user question:
-1. Call searchText with the most specific terms from the question (e.g., the aircraft name plus the property, like "Heliotrope Z-7 range").
-2. For each candidate document returned, call readFile to confirm the value. Search is line-based and frequently misses specs that live in tables, so readFile is REQUIRED before concluding "not in documents".
-3. If your first searchText returns nothing useful, try at least one more query with different terms (synonyms, just the property name, just the aircraft name).
-4. Cite the exact document path and section in your final answer.
-
-ABSOLUTE RULES:
-- NEVER compare two values unless BOTH are confirmed from the documents. If one side is missing after readFile, state which side is missing and STOP — do not infer, do not estimate, do not conclude a comparison anyway.
-- NEVER conclude information is missing after a single searchText call. You must readFile the most plausible document first.
-- If you cannot find the answer after at least one searchText AND one readFile, respond exactly: "I could not find this information in the available documents."
-- NEVER guess, infer, or use your training knowledge — only state what the documents say.
-- If the documents contradict what you "know", the documents are always correct.`
+const AGENT = (() => {
+  const file = process.env.AGENT_PACKAGE || path.join(__dirname, 'packages/gemma4-qa.json')
+  try {
+    const p = loadPackage(file)
+    console.log(`[api] loaded agent package: ${p.name} (model=${p.model.id}, tools=${p.toolAllowlist.join(',')}, steps=${p.runtime.max_steps}, cap=${p.runtime.max_tool_result_chars})`)
+    return p
+  } catch (err) {
+    console.warn(`[api] no agent package (${err.message}); using built-in default`)
+    return FALLBACK_AGENT
+  }
+})()
 
 // ── Tools ────────────────────────────────────────────────────────────────────
 
@@ -94,8 +105,10 @@ async function extractText(fullPath) {
   return fs.readFileSync(fullPath, 'utf-8')
 }
 
-const tools = {
-  listFiles: {
+// Registry keyed by the package's canonical tool names. The agent package's
+// system prompt refers to these names, so the exposed tools must match them.
+const TOOL_REGISTRY = {
+  list_directory: {
     description: 'List all documents available in the document library. Use this first to understand what documents exist before searching or reading.',
     parameters: z.object({
       directory: z.string().describe('Directory to list. Use "." for the root documents folder.')
@@ -111,7 +124,7 @@ const tools = {
     }
   },
 
-  readFile: {
+  read_text_file: {
     description: 'Read the full content of a specific document file. Use when you need to find detailed information in a file.',
     parameters: z.object({
       filepath: z.string().describe('Path to the file relative to the documents folder, e.g. "manual.md" or "subdir/specs.md"')
@@ -123,21 +136,27 @@ const tools = {
           return { error: `File not found: ${filepath}` }
         }
         const content = await extractText(fullPath)
-        const MAX_CHARS = 8000
-        return {
-          filepath,
-          content: content.slice(0, MAX_CHARS),
-          truncated: content.length > MAX_CHARS,
-          totalLength: content.length
+        const cap = (AGENT.runtime && AGENT.runtime.max_tool_result_chars) || 8000
+        if (content.length > cap) {
+          // Visible truncation marker — matches the contract the package's system
+          // prompt relies on, so the model knows the rest of the file wasn't shown.
+          return {
+            filepath,
+            content: content.slice(0, cap) +
+              `\n\n[TRUNCATED: showed the first ${cap} of ${content.length} characters; the rest of this file was NOT shown. Use search_files with a keyword from the question to locate the passage.]`,
+            truncated: true,
+            totalLength: content.length
+          }
         }
+        return { filepath, content, truncated: false, totalLength: content.length }
       } catch (err) {
         return { error: err.message }
       }
     }
   },
 
-  searchText: {
-    description: 'Search documents for a query. Multi-word queries are AND-matched at the document level: a document is included only if ALL terms appear somewhere in the document (not necessarily on the same line). For each matching document the tool returns the best lines (those containing the most query terms). After this you should call readFile on the most likely document — do not assume information is absent based on search alone, because specs in tables often span multiple lines.',
+  search_files: {
+    description: 'Search for text INSIDE files (content match, not file names). Multi-word queries are AND-matched at the document level: a document is included only if ALL terms appear somewhere in it. For each matching document the tool returns the best lines. After this, call read_text_file on the most likely document — do not assume information is absent based on search alone, because specs in tables often span multiple lines.',
     parameters: z.object({
       query: z.string().describe('Search terms. Case-insensitive. Multiple words are AND-matched across the whole document.')
     }),
@@ -173,6 +192,13 @@ const tools = {
     }
   }
 }
+
+// Expose only the tools the agent package allowlists (under the package's names).
+const tools = Object.fromEntries(
+  AGENT.toolAllowlist.filter(n => TOOL_REGISTRY[n]).map(n => [n, TOOL_REGISTRY[n]])
+)
+const unknownTools = AGENT.toolAllowlist.filter(n => !TOOL_REGISTRY[n])
+if (unknownTools.length) console.warn(`[api] agent package references tools with no implementation: ${unknownTools.join(', ')}`)
 
 // ── Auto Pre-Search ──────────────────────────────────────────────────────────
 
@@ -274,13 +300,14 @@ const server = http.createServer(async (req, res) => {
     const lastMsg = body.messages?.[msgCount - 1]
     console.log(`[api] chat request: ${msgCount} messages, last from ${lastMsg?.role}`)
 
-    // Auto pre-search: inject document context if enabled
-    let systemPrompt = SYSTEM_PROMPT
+    // Auto pre-search: inject document context if enabled. The base prompt comes
+    // from the active agent package.
+    let systemPrompt = AGENT.system_prompt
     if (body.autoSearch && lastMsg?.role === 'user') {
       const searchResults = await autoSearch(lastMsg.content)
       if (searchResults) {
         const context = searchResults.map(r => `[${r.file}:${r.line}] ${r.text}`).join('\n')
-        systemPrompt += `\n\nRELEVANT DOCUMENT EXCERPTS (pre-searched for you — use these to answer, and call readFile for full context if needed):\n${context}`
+        systemPrompt += `\n\nRELEVANT DOCUMENT EXCERPTS (pre-searched for you — use these to answer, and call read_text_file for full context if needed):\n${context}`
         console.log(`[api] auto-search injected ${searchResults.length} results`)
       }
     }
@@ -291,7 +318,8 @@ const server = http.createServer(async (req, res) => {
         system: systemPrompt,
         messages: body.messages,
         tools,
-        maxSteps: 10  // Allow up to 10 tool call rounds per response
+        temperature: AGENT.runtime.temperature ?? 0,
+        maxSteps: AGENT.runtime.max_steps || 10  // tool-call rounds, from the agent package
       })
 
       // pipeDataStreamToResponse sends the full AI SDK stream protocol

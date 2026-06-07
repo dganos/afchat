@@ -209,8 +209,12 @@ async def answer_question(
     question: str,
     cfg: dict,
     on_event=None,
+    system_prompt: str | None = None,
 ) -> AgentResult:
     """Run the tool-using loop for a single question, streaming progress via on_event.
+
+    system_prompt overrides the default module SYSTEM_PROMPT (e.g. when an agent
+    package supplies its own prompt).
 
     on_event(kind, *args) is called with:
       ("speak_start", step)         model is about to generate text
@@ -229,7 +233,7 @@ async def answer_question(
     temperature = float(cfg.get("temperature", 0))
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
         {"role": "user", "content": f"Allowed corpus directory: {corpus_dir}\n\nQuestion: {question}"},
     ]
     result = AgentResult()

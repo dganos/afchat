@@ -4,7 +4,12 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { ChevronRight, CheckCircle2, FileText, FolderOpen, Search } from 'lucide-react'
 import { HelicopterLoader } from '@/components/helicopter-loader'
 
+// Keyed by the agent package's canonical tool names (older aliases kept for
+// backward compatibility with any cached transcripts).
 const toolIcons = {
+  list_directory: FolderOpen,
+  read_text_file: FileText,
+  search_files: Search,
   listFiles: FolderOpen,
   readFile: FileText,
   searchText: Search,

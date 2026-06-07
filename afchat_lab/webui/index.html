@@ -374,8 +374,9 @@ const el = (t,c,h)=>{const e=document.createElement(t); if(c)e.className=c; if(h
 const VMAP = {correct:'c', partial:'p', incorrect:'x'};
 let STATE=null, QCACHE=null, RUNCACHE={};
 let _activeConfig='config.yaml', _loadedCorpusConfig=null;
-const CFG_LABEL = {'config.yaml':'EN 🇪🇺','config_he.yaml':'HE 🇮🇱'};
-const isHebrew = ()=> _activeConfig==='config_he.yaml';
+const CFG_LABEL = {'config.yaml':'EN 🇪🇺','config_he.yaml':'HE 🇮🇱','config_124.yaml':'124 🦉'};
+const RTL_CONFIGS = new Set(['config_he.yaml','config_124.yaml']);
+const isHebrew = ()=> RTL_CONFIGS.has(_activeConfig);
 
 function toast(msg){const t=$('#toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2600);}
 

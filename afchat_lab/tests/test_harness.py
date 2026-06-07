@@ -8,8 +8,13 @@ or, if pytest is installed:
 
 import unittest
 
+from pathlib import Path
+
 from harness.judge import _parse_json
+from harness.package import load_package
 from harness.run_eval import representative_subset, summarize
+
+LAB = Path(__file__).resolve().parent.parent
 
 
 def _row(verdict, finish, score, steps, elapsed):
@@ -86,6 +91,31 @@ class RepresentativeSubsetTest(unittest.TestCase):
 
     def test_one(self):
         self.assertEqual(representative_subset(self.qs, 1), [self.qs[0]])
+
+
+class AgentPackageTest(unittest.TestCase):
+    def test_gemma4_package_loads(self):
+        pkg = load_package(LAB / "packages/gemma4-qa.yaml")
+        self.assertEqual(pkg.name, "gemma4-qa")
+        self.assertEqual(pkg.model["id"], "google/gemma-4-e4b")
+        self.assertEqual(pkg.model["context_length"], 16384)
+        self.assertEqual(pkg.tool_allowlist,
+                         ["list_directory", "read_text_file", "search_files"])
+        self.assertEqual(pkg.runtime["max_tool_result_chars"], 16000)
+        # the tuned prompt guidance must be present
+        self.assertIn("search_files matches text INSIDE files", pkg.system_prompt)
+        self.assertIn("SAME language", pkg.system_prompt)
+
+    def test_missing_keys_raise(self):
+        import tempfile, os
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            f.write("name: x\n")  # no model/tools/system_prompt
+            p = f.name
+        try:
+            with self.assertRaises(ValueError):
+                load_package(p)
+        finally:
+            os.unlink(p)
 
 
 class ParseJsonTest(unittest.TestCase):

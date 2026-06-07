@@ -40,7 +40,7 @@ app = FastAPI(title="afchat_lab", lifespan=_lifespan)
 RUN: dict = {"proc": None, "pid": None, "lines": [], "offset": 0, "status": "idle", "started": None, "cmd": None}
 
 ACTIVE_CONFIG: str = "config.yaml"
-CONFIG_OPTIONS: list[str] = ["config.yaml", "config_he.yaml"]
+CONFIG_OPTIONS: list[str] = ["config.yaml", "config_he.yaml", "config_124.yaml"]
 
 # Persisted PID of the eval subprocess. Survives a UI-server restart so an
 # orphaned run can still be stopped and stale state reconciled (BUG-1/BUG-3).
