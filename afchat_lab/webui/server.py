@@ -14,8 +14,10 @@ import asyncio
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -26,17 +28,112 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 LAB = Path(__file__).resolve().parent.parent
 WEBUI = Path(__file__).resolve().parent
 
-app = FastAPI(title="afchat_lab")
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    reconcile_orphan()  # recover/clean a run left behind by a prior server
+    yield
+
+
+app = FastAPI(title="afchat_lab", lifespan=_lifespan)
 
 # Single active run (this is a single-user local tool).
-RUN: dict = {"proc": None, "lines": [], "offset": 0, "status": "idle", "started": None, "cmd": None}
+RUN: dict = {"proc": None, "pid": None, "lines": [], "offset": 0, "status": "idle", "started": None, "cmd": None}
 
 ACTIVE_CONFIG: str = "config.yaml"
 CONFIG_OPTIONS: list[str] = ["config.yaml", "config_he.yaml"]
 
+# Persisted PID of the eval subprocess. Survives a UI-server restart so an
+# orphaned run can still be stopped and stale state reconciled (BUG-1/BUG-3).
+PIDFILE = LAB / ".run.pid"
+
+
+def _write_pidfile(pid: int, cmd: list[str]) -> None:
+    try:
+        PIDFILE.write_text(json.dumps(
+            {"pid": pid, "config": ACTIVE_CONFIG, "started": RUN["started"], "cmd": cmd}
+        ))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _read_pidfile() -> dict | None:
+    try:
+        return json.loads(PIDFILE.read_text())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _clear_pidfile() -> None:
+    try:
+        PIDFILE.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _clean_live(config: str | None) -> None:
+    """Delete the stale run-live.json for the given config's results dir."""
+    try:
+        cfg = load_config(config)
+        live = LAB / cfg["paths"].get("results_dir", "results") / "run-live.json"
+        live.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def reconcile_orphan() -> None:
+    """On server startup, recover or clean up a run left behind by a prior server.
+
+    If the persisted PID is still alive, adopt it as the active run (we lost the
+    asyncio handle but can still stop it by PID). If it's dead, clear the stale
+    pidfile and live snapshot.
+    """
+    info = _read_pidfile()
+    if not info:
+        return
+    global ACTIVE_CONFIG
+    pid = info.get("pid")
+    if pid and _pid_alive(pid):
+        if info.get("config") in CONFIG_OPTIONS and (LAB / info["config"]).exists():
+            ACTIVE_CONFIG = info["config"]
+        RUN.update(
+            proc=None, pid=pid, status="running",
+            started=info.get("started"), cmd=info.get("cmd"), offset=0,
+            lines=["__reconnected__ recovered orphaned run after server restart\n"],
+        )
+    else:
+        _clean_live(info.get("config"))
+        _clear_pidfile()
+
+
+# Parsed-config cache keyed by name → (mtime, data). Avoids re-reading and
+# re-parsing the YAML on every request while still picking up on-disk edits.
+_CONFIG_CACHE: dict[str, tuple[float, dict]] = {}
+
 
 def load_config(cfg: str | None = None) -> dict:
-    return yaml.safe_load((LAB / (cfg or ACTIVE_CONFIG)).read_text())
+    name = cfg or ACTIVE_CONFIG
+    path = LAB / name
+    mtime = path.stat().st_mtime
+    cached = _CONFIG_CACHE.get(name)
+    if cached and cached[0] == mtime:
+        return cached[1]
+    data = yaml.safe_load(path.read_text())
+    _CONFIG_CACHE[name] = (mtime, data)
+    return data
 
 
 def load_testset() -> dict:
@@ -275,6 +372,8 @@ async def _reader(proc) -> None:
     await proc.wait()
     RUN["lines"].append(f"\n__exit__ {proc.returncode}\n")
     RUN["status"] = "done"
+    RUN["pid"] = None
+    _clear_pidfile()
     # Clean up stale live file whether run completed or was killed.
     live = results_dir() / "run-live.json"
     if live.exists():
@@ -308,6 +407,8 @@ async def start_run(req: Request) -> dict:
         env=run_env,
     )
     RUN["proc"] = proc
+    RUN["pid"] = proc.pid
+    _write_pidfile(proc.pid, cmd)
     asyncio.create_task(_reader(proc))
     return {"ok": True, "cmd": cmd}
 
@@ -315,20 +416,35 @@ async def start_run(req: Request) -> dict:
 @app.post("/api/run/stop")
 async def stop_run() -> dict:
     proc = RUN.get("proc")
-    if RUN["status"] != "running" or proc is None:
+    pid = RUN.get("pid")
+    if RUN["status"] != "running":
         raise HTTPException(409, "no run in progress")
     RUN["status"] = "stopping"
     RUN["lines"].append("__stop__ requested by user — terminating run")
     # SIGKILL — can't be caught or ignored, kills immediately even mid-API-call.
-    try:
-        proc.kill()
-    except ProcessLookupError:
-        pass
-    # Give the process 2s to die, then unload models.
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=2.0)
-    except asyncio.TimeoutError:
-        pass
+    if proc is not None:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        # Give the process 2s to die, then unload models.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+    elif pid:
+        # Orphaned run: the server was restarted and lost the asyncio handle, so
+        # there's no _reader to drain output or flip status. Kill by persisted PID
+        # and finalize state here (BUG-1/BUG-3).
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        RUN["lines"].append(f"\n__exit__ killed orphan pid {pid}\n")
+        RUN["status"] = "done"
+        _clean_live(ACTIVE_CONFIG)
+    RUN["pid"] = None
+    _clear_pidfile()
     # Unload models with a timeout so we don't hang here either.
     try:
         lms_path = str(Path.home() / ".lmstudio" / "bin" / "lms")

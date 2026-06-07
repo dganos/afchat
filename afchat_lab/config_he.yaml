@@ -13,12 +13,16 @@ lmstudio:
   api_key: lm-studio
   request_timeout_s: 180
   manage_models: true
-  context_length: 8192
+  # Must hold a whole corpus doc plus prompt + chain-of-thought. Hebrew docs are the
+  # longest in the set (~14k chars). Drop per-model via override for tight RAM.
+  context_length: 16384
 
 agent:
   max_steps: 8
   temperature: 0
-  max_tool_result_chars: 6000
+  # Fit the largest Hebrew doc (~14k chars) in one read so the answer span is never
+  # silently truncated away — the dominant failure cause in the gemma-4-e4b analysis.
+  max_tool_result_chars: 16000
   tool_allowlist:
     - list_directory
     - read_text_file

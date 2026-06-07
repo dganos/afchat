@@ -12,16 +12,35 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 log = logging.getLogger("judge")
-logging.basicConfig(
-    filename="judge.log",
-    level=logging.DEBUG,
-    format="%(asctime)s %(levelname)s %(message)s",
-)
+# No-op by default: importing this module must not spew a CWD-relative judge.log.
+# Callers opt in via configure_logging(); standalone use stays quiet.
+log.addHandler(logging.NullHandler())
+
+
+def configure_logging(log_path: str | os.PathLike | None = None, level: str | None = None) -> None:
+    """Attach a file handler for judge diagnostics.
+
+    Path/level are explicit (callers pass results_dir) or come from the
+    AFCHAT_JUDGE_LOG / AFCHAT_JUDGE_LOG_LEVEL env vars. Level defaults to INFO,
+    not DEBUG, so the prompt/response of every grade isn't logged unboundedly.
+    """
+    log_path = log_path or os.environ.get("AFCHAT_JUDGE_LOG")
+    if not log_path:
+        return
+    level_name = (level or os.environ.get("AFCHAT_JUDGE_LOG_LEVEL") or "INFO").upper()
+    handler = logging.FileHandler(Path(log_path), encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    log.setLevel(getattr(logging, level_name, logging.INFO))
+    # Avoid stacking duplicate handlers if called more than once.
+    log.handlers = [h for h in log.handlers if not isinstance(h, logging.FileHandler)]
+    log.addHandler(handler)
 
 
 class JudgeUnavailable(RuntimeError):

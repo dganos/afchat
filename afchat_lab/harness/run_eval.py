@@ -60,6 +60,55 @@ def _clip(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def representative_subset(questions: list[dict], n: int) -> list[dict]:
+    """Pick n questions spread evenly across the test set (R9).
+
+    A naive first-N smoke run hides deep-document failures: the early questions tend
+    to have their facts near the top of their source docs, so a 5Q run can read 5/5
+    while later "deep fact" questions silently fail. Evenly spaced sampling always
+    includes the last (often hardest) questions, and is deterministic — reproducible
+    per NFR-5.
+    """
+    if n <= 0 or n >= len(questions):
+        return questions
+    if n == 1:
+        return [questions[0]]
+    last = len(questions) - 1
+    idx = sorted({round(i * last / (n - 1)) for i in range(n)})
+    return [questions[i] for i in idx]
+
+
+def summarize(rows: list[dict], label: str, mid: str, duration_s: int) -> dict:
+    """Compute a per-model summary from its question rows.
+
+    Single source of truth for both the live snapshot and the final record, so the
+    two can never drift. Error accounting (FR-6):
+      - judge error: model answered but Claude couldn't score → excluded from denominator.
+      - model error: model crashed (finish=error) → counts as 0, stays in denominator.
+    """
+    n = len(rows)
+    judge_errors = [r for r in rows if r["verdict"] == "error" and r["finish"] != "error"]
+    model_errors = [r for r in rows if r["verdict"] == "error" and r["finish"] == "error"]
+    scored = [r for r in rows if r["verdict"] != "error" or r["finish"] == "error"]
+    n_scored = len(scored)
+    total = sum(r["score"] for r in scored)
+    return {
+        "label": label, "id": mid, "n": n, "n_scored": n_scored,
+        "correct": sum(r["verdict"] == "correct" for r in rows),
+        "partial": sum(r["verdict"] == "partial" for r in rows),
+        "incorrect": sum(r["verdict"] == "incorrect" for r in rows),
+        "model_errors": len(model_errors),
+        "judge_errors": len(judge_errors),
+        "score": round(total, 2),
+        "pct": round(100 * total / n_scored, 1) if n_scored else 0.0,
+        "avg_steps": round(sum(r["steps"] for r in rows) / n, 1) if n else 0,
+        "duration_s": duration_s,
+        "avg_q_s": round(sum(r["elapsed_s"] for r in rows) / n, 1) if n else 0,
+        "std_q_s": _std([r["elapsed_s"] for r in rows]) if n else 0.0,
+        "rows": rows,
+    }
+
+
 class _RunLog:
     """Tees sys.stdout to a log file for the duration of a run."""
 
@@ -173,7 +222,7 @@ async def run(args: argparse.Namespace) -> None:
     testset = json.loads((LAB / paths["testset"]).read_text())
     questions = testset["questions"]
     if args.limit:
-        questions = questions[: args.limit]
+        questions = representative_subset(questions, args.limit)
 
     models = cfg["models"]
     if args.models:
@@ -212,6 +261,7 @@ async def run(args: argparse.Namespace) -> None:
     rdir = LAB / cfg_paths.get("results_dir", "results")
     rdir.mkdir(exist_ok=True)
     live_path = rdir / "run-live.json"
+    judging.configure_logging(rdir / "judge.log", cfg["judge"].get("log_level"))
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_log = _RunLog(rdir / f"run-{stamp}.log")
@@ -222,27 +272,7 @@ async def run(args: argparse.Namespace) -> None:
     def write_live(label: str, mid: str, rows: list, elapsed: int = 0) -> None:
         if not rows:
             return
-        n = len(rows)
-        judge_errors = [r for r in rows if r["verdict"] == "error" and r["finish"] != "error"]
-        model_errors = [r for r in rows if r["verdict"] == "error" and r["finish"] == "error"]
-        scored = [r for r in rows if r["verdict"] != "error" or r["finish"] == "error"]
-        n_scored = len(scored)
-        total = sum(r["score"] for r in scored)
-        live_model = {
-            "label": label, "id": mid, "n": n, "n_scored": n_scored, "live": True,
-            "correct": sum(r["verdict"] == "correct" for r in rows),
-            "partial": sum(r["verdict"] == "partial" for r in rows),
-            "incorrect": sum(r["verdict"] == "incorrect" for r in rows),
-            "model_errors": len(model_errors),
-            "judge_errors": len(judge_errors),
-            "score": round(total, 2),
-            "pct": round(100 * total / n_scored, 1) if n_scored else 0.0,
-            "avg_steps": round(sum(r["steps"] for r in rows) / n, 1),
-            "duration_s": elapsed,
-            "avg_q_s": round(sum(r["elapsed_s"] for r in rows) / n, 1),
-            "std_q_s": _std([r["elapsed_s"] for r in rows]),
-            "rows": rows,
-        }
+        live_model = {**summarize(rows, label, mid, elapsed), "live": True}
         snap = {**run_record, "live": True, "current_model": label,
                 "models": run_record["models"] + [live_model]}
         try:
@@ -296,7 +326,8 @@ async def run(args: argparse.Namespace) -> None:
                     "id": q["id"], "difficulty": q["difficulty"], "source_doc": q["source_doc"],
                     "answer": ar.answer, "steps": ar.steps, "finish": ar.finish, "error": ar.error,
                     "n_tool_calls": len(ar.tool_calls), "elapsed_s": round(time.monotonic() - q_start, 1),
-                    "verdict": v.verdict, "score": v.score, "rationale": v.rationale, "grader": v.grader,
+                    "verdict": v.verdict, "score": v.score, "rationale": v.rationale,
+                    "grader": v.grader, "raw": v.raw,
                 }
             )
             write_live(label, mid, rows, round(time.monotonic() - model_start))
@@ -308,31 +339,9 @@ async def run(args: argparse.Namespace) -> None:
             print(f"  judge: score={v.score}  {v.rationale}", flush=True)
         if manage:
             model_unload(mid)
-        n = len(rows)
         duration_s = round(time.monotonic() - model_start)
-        # Judge errors: model answered but Claude couldn't score → exclude from denominator.
-        # Model errors: model crashed → count as 0 in denominator.
-        judge_errors = [r for r in rows if r["verdict"] == "error" and r["finish"] != "error"]
-        model_errors = [r for r in rows if r["verdict"] == "error" and r["finish"] == "error"]
-        scored = [r for r in rows if r["verdict"] != "error" or r["finish"] == "error"]
-        n_scored = len(scored)
-        total = sum(r["score"] for r in scored)
-        summary = {
-            "label": label, "id": mid, "n": n, "n_scored": n_scored,
-            "correct": sum(r["verdict"] == "correct" for r in rows),
-            "partial": sum(r["verdict"] == "partial" for r in rows),
-            "incorrect": sum(r["verdict"] == "incorrect" for r in rows),
-            "model_errors": len(model_errors),
-            "judge_errors": len(judge_errors),
-            "score": round(total, 2),
-            "pct": round(100 * total / n_scored, 1) if n_scored else 0.0,
-            "avg_steps": round(sum(r["steps"] for r in rows) / n, 1) if n else 0,
-            "duration_s": duration_s,
-            "avg_q_s": round(sum(r["elapsed_s"] for r in rows) / n, 1) if n else 0,
-            "std_q_s": _std([r["elapsed_s"] for r in rows]) if n else 0.0,
-            "rows": rows,
-        }
-        print(f"  -> {summary['pct']}% over {n_scored}Q  ({summary['correct']}✓ {summary['partial']}~ {summary['incorrect']}✗ {len(model_errors)}💥 {len(judge_errors)}⚖︎)  {duration_s}s")
+        summary = summarize(rows, label, mid, duration_s)
+        print(f"  -> {summary['pct']}% over {summary['n_scored']}Q  ({summary['correct']}✓ {summary['partial']}~ {summary['incorrect']}✗ {summary['model_errors']}💥 {summary['judge_errors']}⚖︎)  {duration_s}s")
         return summary
 
     async with stdio_client(params) as (r, w):
@@ -344,15 +353,15 @@ async def run(args: argparse.Namespace) -> None:
             for m in models:
                 run_record["models"].append(await eval_model(session, oai_tools, m))
 
-    write_outputs(run_record, testset, stamp)
+    write_outputs(run_record, testset, stamp, rdir=rdir)
     if live_path.exists():
         live_path.unlink()
     run_log.close()
 
 
-def write_outputs(run_record: dict, testset: dict, stamp: str | None = None) -> None:
-    cfg = load_config()
-    rdir = LAB / cfg["paths"].get("results_dir", "results")
+def write_outputs(run_record: dict, testset: dict, stamp: str | None = None, rdir: Path | None = None) -> None:
+    if rdir is None:
+        rdir = LAB / load_config()["paths"].get("results_dir", "results")
     rdir.mkdir(exist_ok=True)
     if not stamp:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -380,7 +389,7 @@ def write_outputs(run_record: dict, testset: dict, stamp: str | None = None) -> 
 def main() -> None:
     global _CONFIG_FILE
     p = argparse.ArgumentParser(description="afchat_lab document-QA benchmark")
-    p.add_argument("--limit", type=int, default=0, help="only the first N questions")
+    p.add_argument("--limit", type=int, default=0, help="evenly-spaced sample of N questions (representative smoke subset)")
     p.add_argument("--models", type=str, default="", help="comma-separated labels/ids to run")
     p.add_argument("--no-manage", action="store_true", help="do not load/unload models via lms")
     p.add_argument("--config", type=str, default="config.yaml", help="config file to use")

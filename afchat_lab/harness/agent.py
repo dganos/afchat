@@ -28,9 +28,19 @@ SYSTEM_PROMPT = (
     "1. Call list_directory on the corpus directory to see the available files.\n"
     "2. Pick the file whose name best matches the question and call read_text_file on it.\n"
     "3. Find the specific fact and give a short, direct final answer.\n\n"
-    "Rules: ground every answer in the documents. Do not invent facts. When you know the "
-    "answer, reply with the final answer as plain text and stop calling tools. Keep the "
-    "final answer concise (one or two sentences with the exact numbers/terms)."
+    "Finding facts in long documents:\n"
+    "- Documents can be long and a single read may be cut short. If a tool result ends "
+    "with a [TRUNCATED ...] notice, the rest of that file was NOT shown to you.\n"
+    "- search_files matches text INSIDE files, not file names. When the fact is not in "
+    "the part you have read, call search_files with a concrete keyword from the question "
+    "— a number, a unit, a country, or a specific term — to locate the right passage, "
+    "then read around it.\n"
+    "- Do NOT conclude that the information is missing until you have read the WHOLE "
+    "relevant file (keep reading or search the file first). Prefer searching over giving up.\n\n"
+    "Rules: ground every answer in the documents. Do not invent facts. Answer in the SAME "
+    "language as the question. When you know the answer, reply with the final answer as "
+    "plain text and stop calling tools. Keep the final answer concise (one or two "
+    "sentences with the exact numbers/terms)."
 )
 
 
@@ -92,8 +102,18 @@ async def _dispatch_tool(session: ClientSession, name: str, args: dict, cap: int
             parts.append(text if text is not None else str(block))
         out = "\n".join(parts)
     except Exception as e:  # noqa: BLE001
-        out = f"[tool error] {e}"
-    return out[:cap]
+        return f"[tool error] {e}"[:cap]
+    if len(out) > cap:
+        # Make truncation VISIBLE: a silent cut leaves the model unable to tell the
+        # answer span was dropped, so it wrongly concludes the info is missing.
+        full = len(out)
+        out = out[:cap] + (
+            f"\n\n[TRUNCATED: showed the first {cap} of {full} characters; the rest of "
+            f"this file was NOT shown. The answer may be in the unshown part — call "
+            f"search_files with a keyword from the question (a number, unit, term, or "
+            f"country) to locate the passage, then read around it.]"
+        )
+    return out
 
 
 async def _stream_step(client, model, messages, tools, temperature, emit):
@@ -127,6 +147,57 @@ async def _stream_step(client, model, messages, tools, temperature, emit):
                 slot["args"] += fn.arguments
     tool_calls = [tcs[i] for i in sorted(tcs)]
     return content, tool_calls
+
+
+def _append_tool_turn(messages: list[dict], content: str, tool_calls: list[dict]) -> None:
+    """Record the assistant turn (text + the tool calls it requested)."""
+    messages.append(
+        {
+            "role": "assistant",
+            "content": content or "",
+            "tool_calls": [
+                {"id": t["id"] or f"call_{i}", "type": "function",
+                 "function": {"name": t["name"], "arguments": t["args"]}}
+                for i, t in enumerate(tool_calls)
+            ],
+        }
+    )
+
+
+async def _run_tool_calls(
+    session: ClientSession, tool_calls: list[dict], messages: list[dict],
+    cap: int, result: "AgentResult", emit,
+) -> None:
+    """Execute each tool call and append its result as a tool message."""
+    for i, t in enumerate(tool_calls):
+        try:
+            args = json.loads(t["args"] or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        emit("tool", t["name"], args)
+        output = await _dispatch_tool(session, t["name"], args, cap)
+        result.tool_calls.append({"name": t["name"], "args": args, "chars": len(output)})
+        emit("tool_result", t["name"], len(output))
+        messages.append({"role": "tool", "tool_call_id": t["id"] or f"call_{i}", "content": output})
+
+
+async def _force_final_answer(
+    client, model: str, messages: list[dict], temperature: float, result: "AgentResult", emit,
+) -> None:
+    """Out of steps: ask for a final answer with no tools available."""
+    messages.append(
+        {"role": "user", "content": "Based only on the documents you have read, give your final answer now."}
+    )
+    emit("speak_start", "final")
+    try:
+        content, _ = await _stream_step(client, model, messages, None, temperature, emit)
+    except Exception as e:  # noqa: BLE001
+        result.error = f"final answer error: {e}"
+        result.finish = "error"
+        return
+    emit("speak_end")
+    result.answer = content.strip()
+    result.finish = "max_steps"
 
 
 async def answer_question(
@@ -180,40 +251,8 @@ async def answer_question(
             return result
 
         # Record the assistant turn (with its tool calls) then execute each call.
-        messages.append(
-            {
-                "role": "assistant",
-                "content": content or "",
-                "tool_calls": [
-                    {"id": t["id"] or f"call_{i}", "type": "function",
-                     "function": {"name": t["name"], "arguments": t["args"]}}
-                    for i, t in enumerate(tool_calls)
-                ],
-            }
-        )
-        for i, t in enumerate(tool_calls):
-            try:
-                args = json.loads(t["args"] or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            emit("tool", t["name"], args)
-            output = await _dispatch_tool(session, t["name"], args, cap)
-            result.tool_calls.append({"name": t["name"], "args": args, "chars": len(output)})
-            emit("tool_result", t["name"], len(output))
-            messages.append({"role": "tool", "tool_call_id": t["id"] or f"call_{i}", "content": output})
+        _append_tool_turn(messages, content, tool_calls)
+        await _run_tool_calls(session, tool_calls, messages, cap, result, emit)
 
-    # Out of steps: force a final answer with no tools.
-    messages.append(
-        {"role": "user", "content": "Based only on the documents you have read, give your final answer now."}
-    )
-    emit("speak_start", "final")
-    try:
-        content, _ = await _stream_step(client, model, messages, None, temperature, emit)
-    except Exception as e:  # noqa: BLE001
-        result.error = f"final answer error: {e}"
-        result.finish = "error"
-        return result
-    emit("speak_end")
-    result.answer = content.strip()
-    result.finish = "max_steps"
+    await _force_final_answer(client, model, messages, temperature, result, emit)
     return result

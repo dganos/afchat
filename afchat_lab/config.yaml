@@ -17,12 +17,17 @@ lmstudio:
   request_timeout_s: 180
   # If true, the runner loads/unloads each model via the `lms` CLI before/after its run.
   manage_models: true
-  context_length: 8192        # load context window; bigger = more RAM. Tune for 8 GB targets.
+  # Must hold a whole corpus doc (~6-8k tokens) plus the prompt and the model's
+  # chain-of-thought, or read_text_file output overflows and facts get lost.
+  # For 8 GB targets, drop this per-model via the `context_length` model override.
+  context_length: 16384       # load context window; bigger = more RAM.
 
 agent:
   max_steps: 8                # max tool-use turns before forcing a final answer
   temperature: 0
-  max_tool_result_chars: 6000 # truncate tool output to protect small context windows
+  # Sized to fit the largest corpus doc (~14k chars) in a single read so the model
+  # never silently loses the part of the document that holds the answer.
+  max_tool_result_chars: 16000
   # Read-only subset of the filesystem server's tools we expose to the candidate.
   tool_allowlist:
     - list_directory
@@ -33,6 +38,9 @@ judge:
   # Claude Agent SDK is the only judge. No Claude, no test (the run preflights and
   # aborts if it can't be reached). There is no fallback grader.
   model: claude-sonnet-4-6
+  # Diagnostics verbosity for results_dir/judge.log. INFO (default) keeps it quiet;
+  # DEBUG logs every prompt/response. Can also be set via AFCHAT_JUDGE_LOG_LEVEL.
+  log_level: INFO
 
 # Candidate models under test (identifiers from `lms ls`).
 models:

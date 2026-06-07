@@ -86,7 +86,12 @@ to evaluate Hebrew-capable models.
    - `config.yaml` (EN) / `config_he.yaml` (HE) — models, judge, agent/server settings.
    - `corpus/` + `corpus_he/` — the documents.
    - `testset/questions.json` + `questions_he.json` — ground truth.
-   - `results/` + `results_he/` — generated artifacts (git-ignored).
+   - `results/` + `results_he/` — generated artifacts (git-ignored), incl. per-run
+     `judge.log` diagnostics.
+
+4. **Tooling**
+   - `scripts/translate_hebrew.py` — Claude-driven generation of the Hebrew corpus/testset.
+   - `tests/` — unit tests for the scoring math (`summarize`) and judge JSON parsing.
 
 ### Dependencies
 - **LM Studio** with local server (`lms server start`), candidate models pulled.
@@ -244,6 +249,16 @@ to evaluate Hebrew-capable models.
    doesn't unfairly tank a model that actually answered.
 6. **Live snapshot file** (`run-live.json`) — decouples the long-running eval subprocess from
    the UI; survives a UI server restart.
+7. **Whole-document reads, with visible truncation** — `max_tool_result_chars` and
+   `context_length` are sized to hold an entire corpus doc in a single `read_text_file`
+   (corpus docs run ~14k chars). Root-cause analysis of gemma-4-e4b showed a 6 KB cap
+   silently dropped >half of each doc, so the model could not see the answer span and
+   wrongly refused. When a read still exceeds the cap it now carries an explicit
+   `[TRUNCATED …]` marker, and the system prompt directs the model to `search_files`
+   (content match) and to read the whole file before concluding a fact is missing.
+8. **Representative smoke subset** — `--limit N` samples N questions evenly across the
+   test set (not the first N), so a quick run still exercises deep-document questions
+   whose facts sit late in their source doc. Deterministic, so it stays reproducible.
 
 ---
 
@@ -251,17 +266,17 @@ to evaluate Hebrew-capable models.
 
 > These are **current, real** defects. This section is the honest state of the prototype.
 
-- **BUG-1 (open, high) — Stop button unreliable.** `POST /api/run/stop` SIGKILLs the
-  subprocess, but: (a) if the UI server was restarted after launch, it lost the subprocess
-  handle (`RUN["proc"]` is None) and cannot stop the orphaned eval — it keeps running and
-  writing `run-live.json`; (b) the in-flight `lms`/model call may hold resources briefly.
-  **Needed:** persist the child PID to disk on launch and have stop fall back to killing by
-  PID; reconcile orphaned runs on server startup.
+- **BUG-1 (fixed) — Stop button unreliable.** The launch now persists the child PID to
+  `.run.pid`; `POST /api/run/stop` falls back to killing by PID (and finalizing state +
+  clearing the live snapshot) when the in-process handle is gone. Residual: the in-flight
+  `lms`/model call may still hold resources briefly after SIGKILL.
 - **BUG-2 (mitigated, watch) — Live-console token duplication.** Caused by watchdog
   reconnects opening overlapping SSE streams during slow (80s/Q) generation. Mitigated via
   empty-data keepalives + single-EventSource guard + 15s watchdog. Verify under the 12B model.
-- **BUG-3 (process lifecycle) — UI server restart orphans a running eval.** The eval is a
-  detached subprocess; restarting `webui.server` loses tracking. Related to BUG-1.
+- **BUG-3 (fixed) — UI server restart orphans a running eval.** On startup the server
+  reconciles `.run.pid`: a still-alive PID is re-adopted as the active run (stoppable by
+  PID), a dead one has its stale pidfile + `run-live.json` cleaned up. Live-leaderboard
+  polling continues for a re-adopted run; the live token stream does not (handle was lost).
 - **LIMITATION — DictaLM 2.0** cannot do tool calling (Mistral/Zephyr template, user/assistant
   roles only). Excluded from the benchmark by design.
 - **NOTE — `lms ls` index** can show stale entries after on-disk model deletion until LM
@@ -303,6 +318,9 @@ python3.10 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 # Web UI
 .venv/bin/python -m webui.server   # http://localhost:8731
+
+# Tests
+.venv/bin/python -m unittest discover -s tests
 ```
 
 ---
