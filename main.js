@@ -43,7 +43,10 @@ function startOllama() {
       OLLAMA_HOST: '127.0.0.1:11434',
       // Keep at most one model resident — this is an 8 GB air-gapped target,
       // two models swapping into RAM thrashes swap (which is disabled).
-      OLLAMA_MAX_LOADED_MODELS: '1'
+      OLLAMA_MAX_LOADED_MODELS: '1',
+      // Flash Attention: faster decode (~+15%) and prefill on Apple Silicon, and
+      // it is off by default in Ollama. Measured net win for our doc-QA workload.
+      OLLAMA_FLASH_ATTENTION: '1'
     }
   })
   ollamaProcess.stdout.on('data', d => {

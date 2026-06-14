@@ -11,7 +11,9 @@ const ollama = spawn(OLLAMA_BIN, ['serve'], {
     ...process.env,
     OLLAMA_MODELS: MODELS_PATH,
     OLLAMA_HOST: '127.0.0.1:11434',
-    OLLAMA_MAX_LOADED_MODELS: '1'
+    OLLAMA_MAX_LOADED_MODELS: '1',
+    // Flash Attention — faster decode/prefill on Apple Silicon; off by default.
+    OLLAMA_FLASH_ATTENTION: '1'
   }
 })
 ollama.stdout.on('data', d => console.log('[ollama]', d.toString().trimEnd()))
