@@ -26,7 +26,9 @@ agent:
   tool_allowlist:
     - list_directory
     - read_text_file
-    - search_files
+    # search_files (the MCP server's filename glob) is intentionally omitted — it
+    # cannot search file CONTENT. The harness injects its own search_content (grep)
+    # tool instead; see harness/agent.py.
 
 judge:
   model: claude-sonnet-4-6
@@ -40,3 +42,9 @@ models:
     label: gemma-4-e4b
   - id: qwen/qwen3-4b
     label: qwen3-4b
+  # Hosted reference candidate — driven via the Claude Agent SDK (not LM Studio).
+  # provider: claude makes the harness skip lms load/unload and use Claude's own
+  # read-only file tools. A strong-model baseline to calibrate the local models.
+  - id: claude-sonnet-4-6
+    label: claude-sonnet-ref
+    provider: claude

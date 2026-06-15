@@ -33,6 +33,7 @@ from harness import judge as judging
 from harness.agent import (
     AgentResult,
     answer_question,
+    answer_question_claude,
     load_fs_server_params,
     mcp_tools_to_openai,
 )
@@ -290,10 +291,13 @@ async def run(args: argparse.Namespace) -> None:
 
     async def eval_model(session, oai_tools, model):
         label, mid = model["label"], model["id"]
+        # Hosted reference candidate (Claude via Agent SDK): no lms load/unload, its
+        # own read-only tools instead of the LM Studio + MCP path.
+        is_claude = model.get("provider") == "claude" or mid.startswith("claude")
         model_start = time.monotonic()
-        print(f"\n=== {label}  ({mid}) ===")
+        print(f"\n=== {label}  ({mid}){'  [reference: Claude Agent SDK]' if is_claude else ''} ===")
         load_err = None
-        if manage:
+        if manage and not is_claude:
             # Per-model overrides (optional): a smaller context and/or partial GPU
             # offload for models that can't run at the global default on 8 GB.
             mctx = int(model.get("context_length", ctx))
@@ -313,6 +317,13 @@ async def run(args: argparse.Namespace) -> None:
             if load_err:
                 ar = AgentResult(error=load_err, finish="error")
                 print(f"  A: [error] {_clip(load_err, 200)}", flush=True)
+            elif is_claude:
+                ar = await answer_question_claude(
+                    corpus_dir, q["question"], cfg["agent"],
+                    on_event=_make_printer(run_log), model=mid,
+                )
+                if not ar.answer and ar.error:
+                    print(f"  A: [error] {_clip(ar.error, 200)}", flush=True)
             else:
                 ar = await answer_question(
                     session, oai_tools, client, mid, corpus_dir, q["question"], cfg["agent"],
@@ -337,7 +348,7 @@ async def run(args: argparse.Namespace) -> None:
             print(f"  judge raw: {v.raw}")
             print(f"  {mark} {v.verdict.upper()}  (steps={ar.steps}, tools={len(ar.tool_calls)}, {q_elapsed}s)")
             print(f"  judge: score={v.score}  {v.rationale}", flush=True)
-        if manage:
+        if manage and not is_claude:
             model_unload(mid)
         duration_s = round(time.monotonic() - model_start)
         summary = summarize(rows, label, mid, duration_s)

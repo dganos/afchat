@@ -275,7 +275,7 @@ def state() -> dict:
 
 @app.get("/api/runs/{name}")
 def get_run(name: str) -> JSONResponse:
-    if not re.fullmatch(r"run-[0-9-]+\.json", name):
+    if not re.fullmatch(r"run-[0-9A-Za-z-]+\.json", name):
         raise HTTPException(400, "bad name")
     f = results_dir() / name
     if not f.exists():
@@ -285,7 +285,7 @@ def get_run(name: str) -> JSONResponse:
 
 @app.delete("/api/runs/{name}")
 def delete_run(name: str) -> dict:
-    if not re.fullmatch(r"run-[0-9-]+\.json", name):
+    if not re.fullmatch(r"run-[0-9A-Za-z-]+\.json", name):
         raise HTTPException(400, "bad name")
     f = results_dir() / name
     if not f.exists():
@@ -309,7 +309,7 @@ def list_logs() -> JSONResponse:
 
 @app.delete("/api/logs/{name}")
 def delete_log(name: str) -> dict:
-    if not re.fullmatch(r"run-[0-9-]+\.log", name):
+    if not re.fullmatch(r"run-[0-9A-Za-z-]+\.log", name):
         raise HTTPException(400, "bad name")
     f = results_dir() / name
     if not f.exists():
@@ -320,7 +320,7 @@ def delete_log(name: str) -> dict:
 
 @app.get("/api/logs/{name}")
 def get_log(name: str):
-    if not re.fullmatch(r"run-[0-9-]+\.log", name):
+    if not re.fullmatch(r"run-[0-9A-Za-z-]+\.log", name):
         raise HTTPException(400, "bad name")
     f = results_dir() / name
     if not f.exists():
