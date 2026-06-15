@@ -26,25 +26,34 @@ SYSTEM_PROMPT = """You are a document-grounded question-answering agent. Answer 
 
 ## Your tools (read-only)
 1. list_directory(path) — lists the files in a directory. Call it first to see which documents exist.
-2. search_content(pattern, [path]) — searches for text INSIDE the documents (a content/grep search). Give a concrete keyword, number, unit, or short phrase; it returns the matching lines with their file and line number. This is your MAIN tool: it jumps you straight to a fact without reading whole files. Matching is case-insensitive substring, so use a SHORT exact term (a single word, a number, or a unit), NOT a whole sentence and NOT a glob like "*length*".
+2. search_content(pattern, [path], [context]) — searches for text INSIDE the documents (a content/grep search). Give a concrete keyword, number, unit, or short phrase; it returns the matching lines with their file and line number. This is your MAIN tool: it jumps you straight to a fact without reading whole files. Matching is case-insensitive substring, so use a SHORT exact term (a single word, a number, or a unit), NOT a whole sentence and NOT a glob like "*length*". To try several wordings at once, join them with OR (e.g. "crew OR צוות"). Two extras: pattern="## " lists every section heading (the document's table of contents); context=N also returns the N lines AFTER each match, so searching a heading with context≈25 pulls that whole section's body.
 3. read_text_file(path, [head], [tail]) — returns a file's text. Use the EXACT path shown by list_directory. A file can be long; pass head=N or tail=N to read only the first/last N lines instead of the whole file. A very long read may come back ending in a "[TRUNCATED ...]" notice — the rest was NOT shown.
 
-## How to answer — locate first, then read narrowly
-1. Call list_directory to see the available files.
-2. Decide the document's term for what is asked. Map the question's everyday wording to the term/unit the document would use, by MEANING not by matching words. For example:
+## How to find the answer
+First call list_directory. Then navigate with whichever of these two methods fits — and combine them. Each document is organised under section headings, like a manual with a table of contents.
+
+METHOD A — jump straight to a fact (best for a specific value, e.g. a dimension, speed, weight, limit):
+1. Map the question's everyday wording to the term/unit the document would use, by MEANING not by matching words. For example:
    - "how long is it / from nose to tail" ↔ "אורך" / "length"
    - "how tall / how high" ↔ a "Height" / "גובה" row
    - "how heavy / what does it weigh" ↔ a "Weight" / "Mass" / "משקל" entry
    - an abbreviation in the question may be spelled out in the document (or vice-versa); a value may be in a different unit than you expected.
-3. Call search_content with that term — try the question's language first (e.g. Hebrew). Read the returned lines carefully: facts are very often stored as TABLE ROWS like "label | value" (e.g. "אורך כולל | 19.76 m"), so the matching line itself frequently already contains the answer.
-4. If you need more context around a hit, read_text_file the relevant file (use head/tail to stay focused) and read around that spot.
-5. Extract the exact value (number + unit, term, or short list) and give a direct final answer.
+2. search_content that term — try the question's language first (e.g. Hebrew). Facts are very often stored as TABLE ROWS like "label | value" (e.g. "אורך כולל | 19.76 m"), so the matching line itself frequently already contains the answer.
 
-## If the first search finds nothing
-Do NOT conclude it's missing. Search again with a DIFFERENT term — a synonym, the core noun, a related unit or number, or the other language (Hebrew ↔ English). Only say "this is not in the documents" AFTER several different searches have turned up nothing.
+METHOD B — read the catalog (best for a named topic or procedure, or when you don't know the exact keyword — like a person skimming a manual's contents):
+1. List the catalog: search_content(pattern="## ") to get every section heading with its line number. (The data document also has an explicit "תוכן עניינים" / table of contents near its top.)
+2. Reason about which heading's topic would contain the answer, ranked by relevance.
+3. Read that section: search_content for the heading's text with context≈25 to pull its body (or read_text_file around that line). Read it carefully, including any table.
+
+Then extract the exact value (number + unit, term, or short list) and give a direct final answer.
+
+## If a search returns few or no hits — switch to the catalog, don't keep guessing
+The documents use technical terms and ABBREVIATIONS that often differ from the question's everyday wording. The right section may be titled with a code, not the word you searched. For example:
+   - "maximum forward speed" is labelled "VNE"; "rotor RPM range" is labelled "סל\"ד" / "NR".
+So after just ONE keyword search that does not pinpoint the answer, do NOT keep guessing more synonyms and do NOT conclude it's missing. Switch to METHOD B: call search_content(pattern="## ") to list every section heading, pick the heading whose TOPIC matches the question (even if its words are different from the question's), and read that section with context≈25. Only say "this is not in the documents" AFTER the catalog shows no relevant section AND several different searches have turned up nothing.
 
 ## Mistakes to avoid
-- search_content needs a short exact substring. If a search returns nothing, shorten or replace the term — do not give up, and do not fall back to reading the whole file blindly.
+- search_content needs a short exact substring (or a few joined with OR). If a search returns nothing, do NOT repeat similar searches — list the headings with "## " and navigate by section instead. Never fall back to reading a whole file blindly.
 - Trust what your tools return. Do NOT assume more files exist elsewhere, or that a result is "only a snippet", and start over. Build on what you have already seen; never repeat an identical call.
 - Use exact paths from list_directory. A failed read does NOT mean the information is unavailable — fix the path, or reuse content you already retrieved.
 
@@ -71,18 +80,26 @@ CONTENT_SEARCH_TOOL = {
             "with their file and line number. This is the fastest way to locate a fact "
             "without reading whole files. Matching is case-insensitive substring, so use a "
             "short exact term (a single word, number, or unit), not a whole sentence or a "
-            "glob like '*length*'."
+            "glob like '*length*'. To try alternatives in one call, join them with OR "
+            "(e.g. 'crew OR צוות' matches a line containing either). Use pattern='## ' to "
+            "list every section heading (a table of contents), and pass context=N to also "
+            "return the N lines AFTER each match — search a section's heading with "
+            "context=25 to read that section's body."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Text to find inside the documents (keyword, number, unit, or short phrase).",
+                    "description": "Text to find inside the documents (keyword, number, unit, or short phrase). Join alternatives with OR. Use '## ' to list section headings.",
                 },
                 "path": {
                     "type": "string",
-                    "description": "Optional file or sub-directory to restrict the search to. Defaults to all documents.",
+                    "description": "Optional file (or list of files) to restrict the search to. Defaults to all documents.",
+                },
+                "context": {
+                    "type": "integer",
+                    "description": "Number of lines to also return AFTER each match (like grep -A). Use ~20-30 to read a section body after matching its heading. Default 0.",
                 },
             },
             "required": ["pattern"],
@@ -91,52 +108,90 @@ CONTENT_SEARCH_TOOL = {
 }
 
 
+def _scan_roots(base: Path, path) -> "list[Path] | str":
+    """Resolve the path arg to the files/dirs to scan, sandboxed to base.
+
+    `path` may be None/"" (whole corpus), a single string, or a LIST of paths
+    (small models sometimes pass an array). Returns an error string if any path
+    escapes the corpus.
+    """
+    if not path:
+        return sorted(base.rglob("*"))
+    paths = path if isinstance(path, (list, tuple)) else [path]
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for p in paths:
+        if not p:
+            continue
+        pp = Path(str(p))
+        target = (pp if pp.is_absolute() else base / pp).resolve()
+        try:
+            target.relative_to(base)
+        except ValueError:
+            return f"[tool error] path not within the corpus: {p}"
+        for f in ([target] if target.is_file() else sorted(target.rglob("*"))):
+            if f not in seen:
+                seen.add(f)
+                roots.append(f)
+    return roots
+
+
 def _grep_corpus(
-    corpus_dir: str, pattern: str, path: str | None = None,
+    corpus_dir: str, pattern: str, path=None, context: int = 0,
     max_matches: int = 40, line_cap: int = 300,
 ) -> str:
     """Case-insensitive substring search over the corpus' text files.
 
     Returns "rel/path:lineno: <line>" for each match (lines clipped to line_cap),
-    capped at max_matches. Sandboxed to corpus_dir.
+    capped at max_matches. With context=N, also returns the N lines AFTER each
+    match (grep -A style) so a whole section can be pulled by searching for its
+    heading. Forgiving of two common model mistakes: an "A OR B" pattern matches
+    a line containing ANY alternative, and `path` may be a string or a list.
+    Sandboxed to corpus_dir.
     """
     if not pattern:
         return "[tool error] search_content needs a non-empty 'pattern'."
+    context = max(0, min(int(context or 0), 60))
     base = Path(corpus_dir).resolve()
-    if path:
-        p = Path(path)
-        target = (p if p.is_absolute() else base / p).resolve()
-        try:
-            target.relative_to(base)
-        except ValueError:
-            return f"[tool error] path not within the corpus: {path}"
-        roots = [target] if target.is_file() else sorted(target.rglob("*"))
-    else:
-        roots = sorted(base.rglob("*"))
 
-    needle = pattern.lower()
-    hits: list[str] = []
+    roots = _scan_roots(base, path)
+    if isinstance(roots, str):
+        return roots  # path escaped the corpus
+
+    # Forgive boolean "A OR B" syntax: match a line containing ANY alternative.
+    # (We deliberately do NOT split on '|' — that's the markdown table delimiter.)
+    needles = [a.strip().lower() for a in re.split(r"\s+OR\s+", pattern) if a.strip()]
+    if not needles:
+        needles = [pattern.strip().lower()]
+
+    def clip(s: str) -> str:
+        s = s.strip()
+        return s if len(s) <= line_cap else s[:line_cap] + "…"
+
+    blocks: list[str] = []
     for f in roots:
         if not f.is_file():
             continue
         try:
-            text = f.read_text(encoding="utf-8", errors="replace")
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:  # noqa: BLE001
             continue
         rel = f.relative_to(base).as_posix()
-        for i, line in enumerate(text.splitlines(), 1):
-            if needle in line.lower():
-                s = line.strip()
-                if len(s) > line_cap:
-                    s = s[:line_cap] + "…"
-                hits.append(f"{rel}:{i}: {s}")
-                if len(hits) >= max_matches:
-                    return "\n".join(hits) + (
+        for i, line in enumerate(lines):  # 0-based
+            low = line.lower()
+            if any(n in low for n in needles):
+                end = min(len(lines), i + 1 + context)
+                blocks.append("\n".join(f"{rel}:{j + 1}: {clip(lines[j])}" for j in range(i, end)))
+                if len(blocks) >= max_matches:
+                    sep = "\n\n" if context else "\n"
+                    return sep.join(blocks) + (
                         f"\n\n[showing the first {max_matches} matches; refine the pattern for fewer]"
                     )
-    if not hits:
-        return f'No lines containing "{pattern}" were found in the documents.'
-    return "\n".join(hits)
+    if not blocks:
+        shown = " / ".join(f'"{n}"' for n in needles)
+        return f"No lines containing {shown} were found in the documents."
+    sep = "\n\n" if context else "\n"
+    return sep.join(blocks)
 
 
 def load_fs_server_params(mcp_json_path: str, server_name: str, corpus_dir: str) -> StdioServerParameters:
@@ -194,7 +249,9 @@ async def _dispatch_tool(
     try:
         if name == CONTENT_SEARCH_NAME:
             # Harness-implemented content search — never forwarded to the MCP server.
-            out = _grep_corpus(corpus_dir or ".", args.get("pattern", ""), args.get("path"))
+            out = _grep_corpus(
+                corpus_dir or ".", args.get("pattern", ""), args.get("path"), args.get("context", 0)
+            )
         else:
             res = await session.call_tool(name, args)
             parts = []
@@ -315,6 +372,39 @@ async def _stream_step(client, model, messages, tools, temperature, emit):
     return content, tool_calls
 
 
+# LM Studio is flaky when not pinned: a request can fail mid-run with "Model
+# unloaded" (the server auto-unloaded the model) or an HTTP 5xx Internal Server
+# Error (reload / memory pressure). These are transient — the next request makes
+# LM Studio JIT-reload the model — so they should be retried, not scored as 0.
+# A 400 / bad-request / context-length error is NOT transient and is re-raised.
+def _is_retryable(e: Exception) -> bool:
+    msg = str(e).lower()
+    if any(n in msg for n in ("bad request", " 400", "context length", "tokens to keep",
+                              "invalid request", "not found", " 404", "unsupported")):
+        return False
+    return any(m in msg for m in (
+        "model unloaded", "unloaded", "internal server error", "service unavailable",
+        "overloaded", "connection", "timeout", "timed out", "reset", " 500", " 502", " 503", " 504",
+    )) or type(e).__name__.lower() in (
+        "apiconnectionerror", "apitimeouterror", "internalservererror", "apierror",
+    )
+
+
+async def _stream_step_retry(client, model, messages, tools, temperature, emit, attempts: int = 4):
+    """_stream_step with retry on transient LM Studio errors (Model unloaded / 5xx)."""
+    last: Exception | None = None
+    for k in range(attempts):
+        try:
+            return await _stream_step(client, model, messages, tools, temperature, emit)
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if not _is_retryable(e) or k == attempts - 1:
+                raise
+            emit("retry", str(e)[:120], k + 1)
+            await asyncio.sleep(5 * (k + 1))  # give LM Studio time to reload the model
+    raise last  # unreachable, but keeps type-checkers happy
+
+
 def _append_tool_turn(messages: list[dict], content: str, tool_calls: list[dict]) -> None:
     """Record the assistant turn (text + the tool calls it requested)."""
     messages.append(
@@ -370,7 +460,7 @@ async def _force_final_answer(
         # Last pass: forbid tools so the model must answer in plain text.
         tools = None if attempt == 1 else oai_tools
         try:
-            content, tool_calls = await _stream_step(client, model, messages, tools, temperature, emit)
+            content, tool_calls = await _stream_step_retry(client, model, messages, tools, temperature, emit)
         except Exception as e:  # noqa: BLE001
             result.error = f"final answer error: {e}"
             result.finish = "error"
@@ -438,7 +528,7 @@ async def answer_question(
         result.steps = step + 1
         emit("speak_start", step)
         try:
-            content, tool_calls = await _stream_step(client, model, messages, tools, temperature, emit)
+            content, tool_calls = await _stream_step_retry(client, model, messages, tools, temperature, emit)
         except Exception as e:  # noqa: BLE001
             result.error = f"chat.completions error: {e}"
             result.finish = "error"

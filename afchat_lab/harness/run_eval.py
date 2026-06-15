@@ -31,6 +31,7 @@ from openai import AsyncOpenAI
 
 from harness import judge as judging
 from harness.agent import (
+    CONTENT_SEARCH_NAME,
     AgentResult,
     answer_question,
     answer_question_claude,
@@ -190,6 +191,10 @@ def _make_printer(run_log: "_RunLog | None" = None):
         elif kind == "tool_result":
             sys.stdout.write(f"       ↳ {a[1]} chars read\n")
             sys.stdout.flush()
+        elif kind == "retry":
+            close_line()
+            sys.stdout.write(f"     ⟳ transient error (retry {a[1]}): {a[0]}\n")
+            sys.stdout.flush()
 
     return on_event
 
@@ -222,7 +227,9 @@ async def run(args: argparse.Namespace) -> None:
     corpus_dir = str((LAB / paths["corpus_dir"]).resolve())
     testset = json.loads((LAB / paths["testset"]).read_text())
     questions = testset["questions"]
-    if args.limit:
+    if args.first:
+        questions = questions[: args.first]
+    elif args.limit:
         questions = representative_subset(questions, args.limit)
 
     models = cfg["models"]
@@ -360,7 +367,10 @@ async def run(args: argparse.Namespace) -> None:
             await session.initialize()
             tools = await session.list_tools()
             oai_tools = mcp_tools_to_openai(tools, cfg["agent"]["tool_allowlist"])
-            print(f"MCP tools exposed to candidates: {[t['function']['name'] for t in oai_tools]}")
+            mcp_names = [t["function"]["name"] for t in oai_tools]
+            # answer_question also injects the harness-implemented content-search tool.
+            print(f"Tools exposed to candidates: {mcp_names + [CONTENT_SEARCH_NAME]}  "
+                  f"(MCP: {mcp_names}; harness-injected: {CONTENT_SEARCH_NAME})")
             for m in models:
                 run_record["models"].append(await eval_model(session, oai_tools, m))
 
@@ -401,6 +411,7 @@ def main() -> None:
     global _CONFIG_FILE
     p = argparse.ArgumentParser(description="afchat_lab document-QA benchmark")
     p.add_argument("--limit", type=int, default=0, help="evenly-spaced sample of N questions (representative smoke subset)")
+    p.add_argument("--first", type=int, default=0, help="run the first N questions in order (q01..qN); overrides --limit")
     p.add_argument("--models", type=str, default="", help="comma-separated labels/ids to run")
     p.add_argument("--no-manage", action="store_true", help="do not load/unload models via lms")
     p.add_argument("--config", type=str, default="config.yaml", help="config file to use")
