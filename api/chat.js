@@ -2,7 +2,8 @@ const http = require('http')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
-const { createOllama } = require('ollama-ai-provider')
+const { execFile } = require('child_process')
+const { createOpenAI } = require('@ai-sdk/openai')
 const { streamText } = require('ai')
 const { z } = require('zod')
 const mammoth = require('mammoth')
@@ -21,31 +22,39 @@ let currentModel = null
 async function ensureCurrentModel() {
   if (currentModel) return currentModel
   try {
-    const res = await fetch('http://localhost:11434/api/tags')
+    const res = await fetch(LMSTUDIO_BASE + '/v1/models')
     const data = await res.json()
-    const fromPkg = resolveOllamaModel(data.models || [], AGENT.model && AGENT.model.id)
-    currentModel = fromPkg || selectDefaultModel(os.totalmem(), data.models || [])
+    // LM Studio /v1/models returns { data: [{ id }, ...] } (no sizes).
+    const installed = (data.data || []).map(m => ({ name: m.id }))
+    const fromPkg = resolveOllamaModel(installed, AGENT.model && AGENT.model.id)
+    currentModel = fromPkg || (installed[0] && installed[0].name) || null
     if (fromPkg) console.log(`[api] using agent-package model: ${currentModel}`)
-    else if (currentModel) console.log(`[api] package model not installed; auto-selected: ${currentModel}`)
-    else console.warn('[api] no models installed — UI must pick one')
+    else if (currentModel) console.log(`[api] package model not installed; using: ${currentModel}`)
+    else console.warn('[api] no models loaded in LM Studio — UI must pick one')
   } catch (err) {
     console.error('[api] could not auto-select model:', err.message)
   }
   return currentModel
 }
 const DOCS_PATH = process.env.DOCS_PATH || path.join(__dirname, '../resources/documents')
-const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
-// ollama-ai-provider v1.2.0 streaming doesn't parse tool_calls from Ollama's
-// response (only tries to infer them from text content). With thinking models
-// like qwen3 the tool calls come in a structured field that the stream parser
-// ignores. simulateStreaming uses the non-streaming API (which handles
-// tool_calls correctly) and wraps the result in a stream for the AI SDK.
-// numCtx comes from the agent package: Ollama otherwise defaults to a 4096-token
-// window, which truncates large tool results (and the question) out of context.
-const ollamaModel = (name) => ollama(name, {
-  simulateStreaming: true,
-  numCtx: (AGENT.model && AGENT.model.context_length) || undefined,
-})
+// Aristo runs on LM Studio's OpenAI-compatible server (/v1). Unlike Ollama, LM
+// Studio streams structured tool_calls natively, so no simulateStreaming workaround
+// is needed. The context window (num_ctx) is set at model-LOAD time via `lms` (the
+// /v1 surface has no per-request num_ctx) — see startLMStudio() in main.js.
+const LMSTUDIO_BASE = process.env.LMSTUDIO_BASE || 'http://localhost:1234'
+const lmstudio = createOpenAI({ baseURL: LMSTUDIO_BASE + '/v1', apiKey: 'lm-studio' })
+const lmModel = (name) => lmstudio(name)
+
+// Run the LM Studio CLI (model load/unload). Bundled at ~/.lmstudio/bin/lms.
+const LMS_BIN = process.env.LMS_BIN || path.join(os.homedir(), '.lmstudio', 'bin', 'lms')
+function lms(args) {
+  return new Promise((resolve, reject) => {
+    execFile(LMS_BIN, args, { timeout: 180000 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error((stderr || err.message || '').trim()))
+      resolve((stdout || '').trim())
+    })
+  })
+}
 
 // ── Agent Package (model + system prompt + tools + runtime) ───────────────────
 
@@ -265,17 +274,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Lightweight live memory stats for the htop-style meter. Polled frequently,
-  // so it avoids the heavier /models path — only a quick Ollama /api/ps probe
-  // (best-effort) to report how much RAM the loaded model(s) hold.
+  // so it avoids the heavier /models path. LM Studio's API doesn't report loaded
+  // model RAM, so this just reports system total/free/used.
   if (req.method === 'GET' && req.url === '/memory') {
     const total = os.totalmem()
     const free = availableMemory()
+    // LM Studio's API doesn't expose loaded-model RAM in bytes, so the meter shows
+    // total/free/used only (loaded stays 0).
     let loaded = 0
-    try {
-      const psRes = await fetch('http://localhost:11434/api/ps')
-      const psData = await psRes.json()
-      loaded = (psData.models || []).reduce((a, m) => a + (m.size || 0), 0)
-    } catch {}
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ total, free, used: total - free, loaded }))
     return
@@ -288,7 +294,7 @@ const server = http.createServer(async (req, res) => {
     await ensureCurrentModel()
     if (!currentModel) {
       res.writeHead(503, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'No models installed. Pull one with `ollama pull <model>`.' }))
+      res.end(JSON.stringify({ error: 'No model loaded in LM Studio. Load one in the app or via `lms load`.' }))
       return
     }
     // Parse request body
@@ -319,7 +325,7 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const result = streamText({
-        model: ollamaModel(currentModel),
+        model: lmModel(currentModel),
         system: systemPrompt,
         messages: body.messages,
         tools,
@@ -348,38 +354,30 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/models') {
     await ensureCurrentModel()
     try {
-      const [tagsRes, psRes] = await Promise.all([
-        fetch('http://localhost:11434/api/tags'),
-        fetch('http://localhost:11434/api/ps').catch(() => null),
-      ])
-      const data = await tagsRes.json()
-      const psData = psRes ? await psRes.json().catch(() => ({ models: [] })) : { models: [] }
-      const loadedByName = new Map((psData.models || []).map(m => [m.name, m.size || 0]))
-      const loadedTotal = Array.from(loadedByName.values()).reduce((a, b) => a + b, 0)
-
-      const totalRAM = os.totalmem()
-      const freeRAM = availableMemory()
-      // Loaded models would be evicted on switch, so add them back when checking fit.
-      // For a model that's already loaded, exclude only its own size.
-      const effectiveFreeFor = (m) => freeRAM + loadedTotal - (loadedByName.get(m.name) || 0)
-
-      const models = (data.models || []).map(m => ({
-        name: m.name,
-        size: m.size,
-        parameterSize: m.details?.parameter_size || null,
-        quantization: m.details?.quantization_level || null,
-        family: m.details?.family || null,
-        fitsInRAM: m.size < effectiveFreeFor(m) * 0.9,
-      }))
+      // LM Studio's richer model list (state, family, context). No per-model RAM
+      // bytes are exposed, so we can't compute fitsInRAM the way Ollama allowed.
+      const res0 = await fetch(LMSTUDIO_BASE + '/api/v0/models')
+      const data = await res0.json()
+      const models = (data.data || [])
+        .filter(m => m.type === 'llm' || m.type === 'vlm' || !m.type)
+        .map(m => ({
+          name: m.id,
+          size: null,
+          parameterSize: m.arch || null,
+          quantization: m.quantization || null,
+          family: m.arch || null,
+          loaded: m.state === 'loaded',
+          fitsInRAM: true,  // LM Studio API doesn't expose model size in bytes
+        }))
 
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
         currentModel,
         models,
         memory: {
-          total: totalRAM,
-          free: freeRAM,
-          loaded: loadedTotal,
+          total: os.totalmem(),
+          free: availableMemory(),
+          loaded: 0,
         }
       }))
     } catch (err) {
@@ -406,72 +404,31 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
-    const freeRAM = availableMemory()
-
-    // Check if model exists in Ollama
+    // Check the model exists in LM Studio.
     try {
-      const [tagsRes, psRes] = await Promise.all([
-        fetch('http://localhost:11434/api/tags'),
-        fetch('http://localhost:11434/api/ps').catch(() => null),
-      ])
-      const data = await tagsRes.json()
-      const psData = psRes ? await psRes.json().catch(() => ({ models: [] })) : { models: [] }
-      const match = (data.models || []).find(m => m.name === body.model)
+      const res0 = await fetch(LMSTUDIO_BASE + '/api/v0/models')
+      const data = await res0.json()
+      const match = (data.data || []).find(m => m.id === body.model)
 
       if (!match) {
         res.writeHead(404, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: `Model "${body.model}" not found. Pull it first with: ollama pull ${body.model}` }))
+        res.end(JSON.stringify({ error: `Model "${body.model}" not found in LM Studio. Download it in the app first.` }))
         return
       }
 
-      // Models other than the requested one would be evicted when this one loads.
-      const evictableSize = (psData.models || [])
-        .filter(m => m.name !== body.model)
-        .reduce((a, m) => a + (m.size || 0), 0)
-      const effectiveFree = freeRAM + evictableSize
-
-      const fitsInRAM = match.size < effectiveFree * 0.9
-      if (!fitsInRAM) {
-        res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({
-          error: 'Model does not fit in available RAM',
-          modelSize: match.size,
-          freeRAM: effectiveFree
-        }))
-        return
-      }
-
-      // Evict any other resident models before loading the new one. Belt-
-      // and-suspenders alongside OLLAMA_MAX_LOADED_MODELS=1 — guarantees the
-      // old model's VRAM is freed before we start loading the new one.
-      const others = (psData.models || []).filter(m => m.name !== body.model)
-      for (const m of others) {
-        try {
-          await fetch('http://localhost:11434/api/generate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model: m.name, prompt: '', keep_alive: 0 })
-          })
-          console.log(`[api] evicted model: ${m.name}`)
-        } catch (e) {
-          console.warn(`[api] failed to evict ${m.name}: ${e.message}`)
-        }
-      }
-
-      // Eager-load the new model. Empty prompt with keep_alive triggers
-      // Ollama to allocate weights/KV cache and return once the runner is
-      // ready — so the client knows the model is actually usable.
+      // Switch models via the lms CLI: unload others, then load with the agent
+      // package's context window. (LM Studio also JIT-loads on the first /v1 call,
+      // but loading explicitly lets us set num_ctx and report readiness — and
+      // keeps at most one model resident, like OLLAMA_MAX_LOADED_MODELS=1.)
+      const ctx = (AGENT.model && AGENT.model.context_length) || undefined
       console.log(`[api] loading model: ${body.model}`)
       const loadStart = Date.now()
       try {
-        await fetch('http://localhost:11434/api/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: body.model, prompt: '', keep_alive: '5m', stream: false })
-        })
+        await lms(['unload', '--all'])
+        await lms(['load', body.model, '--yes', ...(ctx ? ['--context-length', String(ctx)] : [])])
         console.log(`[api] model loaded in ${((Date.now() - loadStart) / 1000).toFixed(1)}s`)
       } catch (e) {
-        console.error(`[api] eager load failed: ${e.message}`)
+        console.error(`[api] load failed: ${e.message}`)
         res.writeHead(500, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: `Failed to load model: ${e.message}` }))
         return
@@ -480,7 +437,7 @@ const server = http.createServer(async (req, res) => {
       currentModel = body.model
       console.log(`[api] model switched to: ${currentModel}`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ success: true, model: currentModel, fitsInRAM, loadMs: Date.now() - loadStart }))
+      res.end(JSON.stringify({ success: true, model: currentModel, loadMs: Date.now() - loadStart }))
     } catch (err) {
       res.writeHead(500, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err.message }))

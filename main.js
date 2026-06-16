@@ -2,7 +2,6 @@ const { app, BrowserWindow, ipcMain } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
 
-let ollamaProcess = null
 let mainWindow = null
 const earlyLogs = []
 
@@ -32,37 +31,26 @@ async function waitForPort(url, retries = 40, intervalMs = 500) {
   throw new Error(`Service not ready: ${url}`)
 }
 
-function startOllama() {
-  const bin = getResourcePath(
-    process.platform === 'win32' ? 'ollama/ollama.exe' : 'ollama/ollama'
-  )
-  ollamaProcess = spawn(bin, ['serve'], {
-    env: {
-      ...process.env,
-      OLLAMA_MODELS: getResourcePath('models'),
-      OLLAMA_HOST: '127.0.0.1:11434',
-      // Keep at most one model resident — this is an 8 GB air-gapped target,
-      // two models swapping into RAM thrashes swap (which is disabled).
-      OLLAMA_MAX_LOADED_MODELS: '1',
-      // Flash Attention: faster decode (~+15%) and prefill on Apple Silicon, and
-      // it is off by default in Ollama. Measured net win for our doc-QA workload.
-      OLLAMA_FLASH_ATTENTION: '1'
-    }
-  })
-  ollamaProcess.stdout.on('data', d => {
-    const text = d.toString()
-    console.log('[ollama]', text)
-    sendLog('ollama', text)
-  })
-  ollamaProcess.stderr.on('data', d => {
-    const text = d.toString()
-    console.log('[ollama]', text)
-    sendLog('ollama', text)
-  })
+function lmsBin() {
+  const home = process.env.HOME || process.env.USERPROFILE || ''
+  return process.platform === 'win32'
+    ? path.join(home, '.lmstudio', 'bin', 'lms.exe')
+    : path.join(home, '.lmstudio', 'bin', 'lms')
+}
+
+// Aristo runs on LM Studio's local server (OpenAI-compatible, port 1234). Unlike
+// Ollama there's no single bundled binary to spawn-and-hold — `lms server start`
+// launches LM Studio's server (idempotent) and returns. The model is loaded with
+// its context window by the API server's /load endpoint, or JIT on first request.
+function startLMStudio() {
+  const p = spawn(lmsBin(), ['server', 'start'])
+  const pipe = d => { const text = d.toString(); console.log('[lmstudio]', text); sendLog('ollama', text) }
+  p.stdout.on('data', pipe)
+  p.stderr.on('data', pipe)
 }
 
 app.whenReady().then(async () => {
-  startOllama()
+  startLMStudio()
 
   // Pass documents path to the API server via env
   process.env.DOCS_PATH = getResourcePath('documents')
@@ -88,7 +76,7 @@ app.whenReady().then(async () => {
 
   // Wait for backends — and in dev, also wait for the Next dev server.
   const waits = [
-    waitForPort('http://localhost:11434'),
+    waitForPort('http://localhost:1234/v1/models'),
     waitForPort('http://localhost:3001/health')
   ]
   if (isDev) waits.push(waitForPort('http://localhost:3000'))
@@ -124,5 +112,6 @@ app.whenReady().then(async () => {
 })
 
 app.on('before-quit', () => {
-  if (ollamaProcess) ollamaProcess.kill()
+  // Best-effort: stop the LM Studio server we started.
+  try { spawn(lmsBin(), ['server', 'stop']) } catch {}
 })
