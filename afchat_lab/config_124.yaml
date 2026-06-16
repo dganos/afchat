@@ -15,9 +15,11 @@ lmstudio:
   api_key: lm-studio
   request_timeout_s: 180
   manage_models: true
-  # These manuals are far larger than a single context window; the agent must rely on
-  # search_files to locate passages rather than reading whole files.
-  context_length: 16384
+  # These manuals are far larger than a single context window; the agent relies on
+  # search_content to locate passages. The window must still be large enough that one
+  # document read or grep result doesn't evict the system prompt + history (a 4096 ctx
+  # caused overflow→amnesia→tool-loop). gemma-4-e4b supports up to 131072.
+  context_length: 32768
 
 agent:
   max_steps: 8
