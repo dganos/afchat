@@ -20,15 +20,12 @@ afchat_lab/.run.pid
 afchat_lab/.venv/
 afchat_lab/**/__pycache__/
 
-# 124 corpus = real IAF flight-manual content + derived data + reports.
-# Kept local pending explicit confirmation before tracking/pushing.
-afchat_lab/corpus_124/
-afchat_lab/testset/questions_124.json
+# 124 corpus + Aristo docs = real IAF flight-manual content. Now TRACKED in this
+# PRIVATE repo so the (USB-less, internet-connected) Windows dev box gets them via
+# git. Generated PDF reports stay out.
 afchat_lab/*.pdf
 
-# 124 IAF flight-manual docs loaded into the Aristo library (sensitive — keep local)
-resources/documents/yanshuf-*.md
-
-# Local Ollama wiring (symlinks to the machine's binary + model store)
+# Local Ollama wiring (symlinks to the machine's binary + model store). The model
+# weights (~4.8 GB) are NOT in git — too large for free LFS; obtained per-machine.
 resources/models
 resources/ollama

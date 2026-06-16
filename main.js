@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain } = require('electron')
 const { spawn } = require('child_process')
 const path = require('path')
+const fs = require('fs')
 
 let ollamaProcess = null
 let mainWindow = null
@@ -36,6 +37,14 @@ function startOllama() {
   const bin = getResourcePath(
     process.platform === 'win32' ? 'ollama/ollama.exe' : 'ollama/ollama'
   )
+  // Dev box (e.g. a git clone with no bundled runtime): fall back to a
+  // system-installed Ollama already serving on :11434. waitForPort() below blocks
+  // until it's reachable, so we just skip spawning our own.
+  if (!fs.existsSync(bin)) {
+    console.log('[ollama] no bundled runtime found — using a system Ollama on :11434')
+    sendLog('ollama', 'using system-installed Ollama (no bundled runtime)\n')
+    return
+  }
   ollamaProcess = spawn(bin, ['serve'], {
     env: {
       ...process.env,
