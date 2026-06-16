@@ -406,14 +406,20 @@ async def _stream_step_retry(client, model, messages, tools, temperature, emit, 
 
 
 def _append_tool_turn(messages: list[dict], content: str, tool_calls: list[dict]) -> None:
-    """Record the assistant turn (text + the tool calls it requested)."""
+    """Record the assistant turn (text + the tool calls it requested).
+
+    Arguments are normalised to "{}" when blank: a model that emits a no-arg call
+    (e.g. search_content()) yields arguments="", and LM Studio's gemma template
+    returns HTTP 500 on EVERY subsequent request once such a message is in history
+    — an unrecoverable poison pill. "{}" is valid and lets the run continue.
+    """
     messages.append(
         {
             "role": "assistant",
             "content": content or "",
             "tool_calls": [
                 {"id": t["id"] or f"call_{i}", "type": "function",
-                 "function": {"name": t["name"], "arguments": t["args"]}}
+                 "function": {"name": t["name"], "arguments": (t["args"] or "").strip() or "{}"}}
                 for i, t in enumerate(tool_calls)
             ],
         }
