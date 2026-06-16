@@ -162,11 +162,16 @@ else
 fi
 
 echo "==> [3/5] Extracting CPU-only runtime"
+# Bundle the COMPLETE lib/ollama runtime (inference DLLs + runner), not a hand-picked
+# subset — newer Ollama needs more than ggml-base + ggml-cpu-*, and a partial set
+# fails on Windows with "missing inference DLLs". Exclude only the large GPU libs
+# (CUDA/cuBLAS/ROCm/HIP), which an 8 GB CPU-only target doesn't use.
 unzip -o "$OLLAMA_ZIP" \
-  "ollama.exe" "vc_redist.x64.exe" \
-  "lib/ollama/ggml-base.dll" "lib/ollama/ggml-cpu-*.dll" \
+  "ollama.exe" "vc_redist.x64.exe" "lib/ollama/*" \
+  -x "lib/ollama/*cuda*" "lib/ollama/*cublas*" "lib/ollama/*rocm*" "lib/ollama/*hip*" \
   -d resources/ollama/ >/dev/null
 echo "    $(du -sh resources/ollama | cut -f1) total"
+echo "    bundled DLLs: $(ls resources/ollama/lib/ollama 2>/dev/null | wc -l | tr -d ' ')"
 
 # ── 3. Build win-unpacked ────────────────────────────────────────────────────
 echo "==> [4/5] Building win-unpacked (electron-builder --dir)"
