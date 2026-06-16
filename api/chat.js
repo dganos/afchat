@@ -120,11 +120,17 @@ async function extractText(fullPath) {
 // search_content: a content/grep search mirroring afchat_lab's _grep_corpus —
 // case-insensitive substring; "A OR B" matches a line containing either; context=N
 // returns the N lines AFTER each match; sandboxed to DOCS_PATH.
+// Strip bidi/zero-width marks (LRM/RLM, embeddings, isolates, ZWSP/ZWNJ/ZWJ, BOM) so a
+// Hebrew↔Latin boundary can't silently break a literal substring match.
+const stripMarks = s => s.replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
+
 async function grepCorpus({ pattern, path: scope, context }) {
-  if (!pattern) return { error: "search_content needs a non-empty 'pattern'." }
   const ctx = Math.max(0, Math.min(parseInt(context, 10) || 0, 60))
-  const needles = pattern.split(/\s+OR\s+/).map(s => s.trim().toLowerCase()).filter(Boolean)
-  const terms = needles.length ? needles : [pattern.trim().toLowerCase()]
+  // `pattern` may be a single term, a LIST of terms, or (fallback) a string "A OR B".
+  // A line matches if it contains ANY term.
+  const raw = Array.isArray(pattern) ? pattern : String(pattern ?? '').split(/\s+OR\s+/)
+  const terms = raw.map(t => stripMarks(String(t).trim().toLowerCase())).filter(Boolean)
+  if (!terms.length) return { error: "search_content needs a non-empty 'pattern'." }
   const LINE_CAP = 300, MAX_MATCHES = 40
 
   let files
@@ -152,7 +158,8 @@ async function grepCorpus({ pattern, path: scope, context }) {
     try { content = await extractText(path.join(DOCS_PATH, file)) } catch { continue }
     const lines = content.split('\n')
     for (let i = 0; i < lines.length; i++) {
-      if (terms.some(t => lines[i].toLowerCase().includes(t))) {
+      const low = stripMarks(lines[i].toLowerCase())
+      if (terms.some(t => low.includes(t))) {
         const end = Math.min(lines.length, i + 1 + ctx)
         const block = []
         for (let j = i; j < end; j++) block.push(`${file}:${j + 1}: ${clip(lines[j])}`)

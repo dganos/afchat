@@ -18,7 +18,6 @@ import re
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 
@@ -36,6 +35,16 @@ from mcp import ClientSession, StdioServerParameters
 CONTENT_SEARCH_NAME = "search_content"
 # The search_content tool CONTRACT (description + JSON schema) lives in the agent
 # package; this module only IMPLEMENTS it (see _grep_corpus / _dispatch_tool).
+
+
+# Strip bidi/zero-width marks (ZWSP/ZWNJ/ZWJ, LRM/RLM, embeddings, isolates, BOM)
+# that models often emit at a Hebrew↔Latin boundary — they silently break a literal
+# substring match (e.g. "length OR אורך" can attach an RLM to "אורך").
+_MARKS_RE = re.compile("[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
+
+
+def _strip_marks(s: str) -> str:
+    return _MARKS_RE.sub("", s)
 
 
 def _scan_roots(base: Path, path) -> "list[Path] | str":
@@ -88,11 +97,13 @@ def _grep_corpus(
     if isinstance(roots, str):
         return roots  # path escaped the corpus
 
-    # Forgive boolean "A OR B" syntax: match a line containing ANY alternative.
-    # (We deliberately do NOT split on '|' — that's the markdown table delimiter.)
-    needles = [a.strip().lower() for a in re.split(r"\s+OR\s+", pattern) if a.strip()]
+    # `pattern` may be a single term, a list of terms, or (forgiving fallback) a
+    # string with "A OR B". A line matches if it contains ANY term. Bidi/zero-width
+    # marks are stripped so a Hebrew↔Latin boundary can't break the substring match.
+    raw = pattern if isinstance(pattern, (list, tuple)) else re.split(r"\s+OR\s+", str(pattern))
+    needles = [n for n in (_strip_marks(str(t).strip().lower()) for t in raw) if n]
     if not needles:
-        needles = [pattern.strip().lower()]
+        return "[tool error] search_content needs a non-empty 'pattern'."
 
     def clip(s: str) -> str:
         s = s.strip()
@@ -108,7 +119,7 @@ def _grep_corpus(
             continue
         rel = f.relative_to(base).as_posix()
         for i, line in enumerate(lines):  # 0-based
-            low = line.lower()
+            low = _strip_marks(line.lower())
             if any(n in low for n in needles):
                 end = min(len(lines), i + 1 + context)
                 blocks.append("\n".join(f"{rel}:{j + 1}: {clip(lines[j])}" for j in range(i, end)))

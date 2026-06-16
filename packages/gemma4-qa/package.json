@@ -44,11 +44,17 @@
     },
     {
       "name": "search_content",
-      "description": "Search for text INSIDE the documents (a content/grep search). Give a concrete keyword, number, unit, or short phrase; returns the matching lines with their file and line number. This is the fastest way to locate a fact without reading whole files. Matching is case-insensitive substring, so use a short exact term (a single word, number, or unit), not a whole sentence or a glob like '*length*'. To try alternatives in one call, join them with OR (e.g. 'crew OR צוות' matches a line containing either). Use pattern='## ' to list every section heading (a table of contents), and pass context=N to also return the N lines AFTER each match — search a section's heading with context=25 to read that section's body.",
+      "description": "Search for text INSIDE the documents (a content/grep search). Returns the matching lines with their file and line number. This is the fastest way to locate a fact without reading whole files. Matching is case-insensitive substring, so each term is a short exact word/number/unit — not a whole sentence or a glob like '*length*'. To try several wordings at once, pass a LIST of terms in `pattern` (e.g. [\"אורך\", \"length\"]); a line matches if it contains ANY of them. Use pattern='## ' to list every section heading (a table of contents), and pass context=N to also return the N lines AFTER each match — search a section's heading with context=25 to read that section's body.",
       "parameters": {
         "type": "object",
         "properties": {
-          "pattern": { "type": "string", "description": "Text to find inside the documents (keyword, number, unit, or short phrase). Join alternatives with OR. Use '## ' to list section headings." },
+          "pattern": {
+            "description": "A search term, or a LIST of terms to match any of them (e.g. [\"אורך\", \"length\"]). Each term is a short exact substring (a word, number, or unit). Use '## ' to list section headings.",
+            "anyOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" } }
+            ]
+          },
           "path": { "type": "string", "description": "Optional file (or list of files) to restrict the search to. Defaults to all documents." },
           "context": { "type": "integer", "description": "Number of lines to also return AFTER each match (like grep -A). Use ~20-30 to read a section body after matching its heading. Default 0." }
         },
