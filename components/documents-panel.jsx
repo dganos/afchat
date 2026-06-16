@@ -117,7 +117,7 @@ export function DocumentsPanel({ open, onClose }) {
               {files.map((file) => (
                 <li
                   key={file.name}
-                  onDoubleClick={() => setViewingFile(file.name)}
+                  onClick={() => setViewingFile(file.name)}
                   className="flex items-center gap-2 px-4 py-2 hover:bg-muted/30 group cursor-pointer select-none"
                 >
                   <File className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -139,7 +139,7 @@ export function DocumentsPanel({ open, onClose }) {
 
         {/* Footer */}
         <div className="px-4 py-2 border-t text-[11px] text-muted-foreground">
-          {files.length} document{files.length !== 1 ? 's' : ''} — double-click to view
+          {files.length} document{files.length !== 1 ? 's' : ''} — click to view
         </div>
       </div>
 

@@ -46,7 +46,11 @@ function startOllama() {
       OLLAMA_MAX_LOADED_MODELS: '1',
       // Flash Attention: faster decode (~+15%) and prefill on Apple Silicon, and
       // it is off by default in Ollama. Measured net win for our doc-QA workload.
-      OLLAMA_FLASH_ATTENTION: '1'
+      OLLAMA_FLASH_ATTENTION: '1',
+      // Keep the (single) model resident indefinitely so an idle pause never
+      // triggers a cold reload mid-session. The API server warms it up at startup
+      // so the first question is fast too. before-quit unloads it.
+      OLLAMA_KEEP_ALIVE: '-1'
     }
   })
   ollamaProcess.stdout.on('data', d => {

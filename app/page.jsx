@@ -55,6 +55,46 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, status])
 
+  // Model warm-up gate: the API loads the model into memory at startup; poll until
+  // it's ready so we can show a loader and block input — the first question is then
+  // fast (no cold model load mid-chat).
+  const [modelReady, setModelReady] = useState(false)
+  useEffect(() => {
+    let stopped = false
+    const poll = async () => {
+      try {
+        const r = await fetch('http://localhost:3001/ready')
+        if ((await r.json()).ready) { if (!stopped) setModelReady(true); return }
+      } catch { /* API not up yet */ }
+      if (!stopped) setTimeout(poll, 800)
+    }
+    poll()
+    return () => { stopped = true }
+  }, [])
+
+  // Persist how long each answer took: time from when generation starts until it
+  // finishes, keyed by the assistant message id. Shown above that answer's bubble
+  // (the live timer just counts; this keeps the final value).
+  const [durations, setDurations] = useState({})
+  const startRef = useRef(null)
+  const prevBusyRef = useRef(false)
+
+  useEffect(() => {
+    if (isBusy && !prevBusyRef.current) {
+      startRef.current = Date.now()
+    } else if (!isBusy && prevBusyRef.current && startRef.current != null) {
+      const elapsed = (Date.now() - startRef.current) / 1000
+      startRef.current = null
+      setDurations((d) => {
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 'assistant') return { ...d, [messages[i].id]: elapsed }
+        }
+        return d
+      })
+    }
+    prevBusyRef.current = isBusy
+  }, [isBusy, messages])
+
   return (
     <div className="flex flex-col h-screen" dir="rtl">
       {/* Header */}
@@ -82,8 +122,17 @@ export default function ChatPage() {
       {/* Messages */}
       <Conversation className="flex-1">
         <ConversationContent>
-          {/* Empty state */}
-          {messages.length === 0 && (
+          {/* Warming up the model at startup — block with a loader until ready */}
+          {!modelReady && (
+            <div className="flex flex-col items-center justify-center h-[60vh] gap-4">
+              <HelicopterLoader className="h-16 w-16 text-muted-foreground" />
+              <p className="text-lg font-medium text-foreground">טוען את המודל…</p>
+              <p className="text-sm text-muted-foreground">רגע אחד — מחמם את המודל בזיכרון (קורה פעם אחת בהפעלה)</p>
+            </div>
+          )}
+
+          {/* Empty state — once the model is ready */}
+          {modelReady && messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-[60vh] gap-4">
               <img
                 src="./aristo-logo.png"
@@ -99,6 +148,11 @@ export default function ChatPage() {
           {/* Message list */}
           {messages.map((msg) => (
             <Message key={msg.id} from={msg.role} isThinking={isBusy && msg.role === 'assistant' && msg === messages[messages.length - 1]}>
+              {msg.role === 'assistant' && durations[msg.id] != null && (
+                <span className="font-mono text-xs tabular-nums text-muted-foreground px-1">
+                  {durations[msg.id].toFixed(1)}s
+                </span>
+              )}
               <MessageContent from={msg.role}>
                 {msg.parts?.map((part, i) => {
                   if (part.type === 'tool-invocation') {
@@ -154,12 +208,12 @@ export default function ChatPage() {
         <PromptInputTextarea
           value={input}
           onChange={handleInputChange}
-          disabled={isBusy}
-          placeholder="שאל על המסמכים שלך…"
+          disabled={isBusy || !modelReady}
+          placeholder={modelReady ? 'שאל על המסמכים שלך…' : 'טוען את המודל…'}
         />
         <PromptInputSubmit
           isStreaming={isBusy}
-          disabled={isBusy || !input.trim()}
+          disabled={isBusy || !modelReady || !input.trim()}
         />
       </PromptInput>
 

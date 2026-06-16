@@ -16,6 +16,9 @@ const { loadPackage, resolveOllamaModel } = require('./agent-package')
 // models rather than a hardcoded name. We prefer the agent package's model when
 // it is installed, otherwise fall back to auto-selection by RAM fit.
 let currentModel = null
+// Flips true once the model is warmed up (loaded into memory) at startup, so the UI
+// can show a loading state and block input until the first question will be fast.
+let modelReady = false
 
 async function ensureCurrentModel() {
   if (currentModel) return currentModel
@@ -278,6 +281,14 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200)
     res.end('ok')
+    return
+  }
+
+  // Warm-up status — the UI polls this and blocks input with a loader until the
+  // model is loaded, so the first question is never slowed by a cold model load.
+  if (req.method === 'GET' && req.url === '/ready') {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ready: modelReady, model: currentModel }))
     return
   }
 
@@ -620,6 +631,51 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(3001, () => {
   console.log('[api] listening on http://localhost:3001')
+  warmUpModel()
 })
+
+// Warm-up: load the model into memory at startup (behind the app's boot splash) so
+// the user's FIRST question isn't slowed by a cold model load. Empty prompt +
+// keep_alive tells Ollama to allocate weights/KV cache and stay resident; it returns
+// once the runner is ready. Best-effort — retries a few times while Ollama finishes
+// starting, and never blocks the server.
+async function warmUpModel() {
+  const sleep = (ms) => new Promise(res => setTimeout(res, ms))
+  try {
+    // 1) Wait (up to ~60s) for Ollama's HTTP API to come up — spawned in parallel.
+    let up = false
+    for (let i = 0; i < 60 && !up; i++) {
+      try { up = (await fetch('http://localhost:11434/api/version')).ok } catch { /* not yet */ }
+      if (!up) await sleep(1000)
+    }
+    if (!up) { console.warn('[api] warm-up: Ollama did not come up'); return }
+
+    const model = await ensureCurrentModel()
+    if (!model) { console.warn('[api] warm-up: no model available'); return }
+
+    // 2) One warm-up generate — empty prompt + keep_alive loads weights/KV cache and
+    // returns only once the runner is ready. The await blocks for the whole cold load
+    // (can be 30-60s on an 8 GB box), so the user's first real question is fast.
+    const t0 = Date.now()
+    const r = await fetch('http://localhost:11434/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // keep_alive MUST be the number -1 (the string "-1" is parsed as a duration
+      // and 400s). Load at the SAME num_ctx the chat requests use, or the first
+      // chat would reload the model at a different context window.
+      body: JSON.stringify({
+        model, prompt: '', keep_alive: -1, stream: false,
+        options: { num_ctx: (AGENT.model && AGENT.model.context_length) || undefined },
+      }),
+    })
+    if (r.ok) console.log(`[api] warmed up model ${model} in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+    else console.warn(`[api] warm-up returned HTTP ${r.status}`)
+  } catch (e) {
+    console.warn(`[api] warm-up failed: ${e.message}; first request may be slow`)
+  } finally {
+    // Unblock the UI regardless — on failure the first chat just loads the model.
+    modelReady = true
+  }
+}
 
 module.exports = { server }
