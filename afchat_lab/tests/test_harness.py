@@ -95,21 +95,22 @@ class RepresentativeSubsetTest(unittest.TestCase):
 
 class AgentPackageTest(unittest.TestCase):
     def test_gemma4_package_loads(self):
-        pkg = load_package(LAB / "packages/gemma4-qa.yaml")
+        # The shared agent package lives at the repo root (loaded by lab AND Aristo).
+        pkg = load_package(LAB.parent / "packages" / "gemma4-qa")
         self.assertEqual(pkg.name, "gemma4-qa")
-        self.assertEqual(pkg.model["id"], "google/gemma-4-e4b")
-        self.assertEqual(pkg.model["context_length"], 16384)
-        self.assertEqual(pkg.tool_allowlist,
-                         ["list_directory", "read_text_file", "search_files"])
+        self.assertEqual(pkg.model["id"], "gemma-4-e4b:latest")
+        self.assertEqual(pkg.model["context_length"], 32768)
+        self.assertEqual(pkg.tool_names,
+                         ["list_directory", "read_text_file", "search_content"])
         self.assertEqual(pkg.runtime["max_tool_result_chars"], 16000)
         # the tuned prompt guidance must be present
-        self.assertIn("search_files matches text INSIDE files", pkg.system_prompt)
+        self.assertIn("search_content", pkg.system_prompt)
         self.assertIn("SAME language", pkg.system_prompt)
 
     def test_missing_keys_raise(self):
         import tempfile, os
-        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-            f.write("name: x\n")  # no model/tools/system_prompt
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            f.write('{"name": "x"}')  # no model/tools/system_prompt_file
             p = f.name
         try:
             with self.assertRaises(ValueError):

@@ -23,45 +23,8 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 
 
-SYSTEM_PROMPT = """You are a document-grounded question-answering agent. Answer the user's question using ONLY the documents reachable through your tools — never from prior knowledge or assumptions. The file names indicate each document's topic.
-
-## Your tools (read-only)
-1. list_directory(path) — lists the files in a directory. Call it first to see which documents exist.
-2. search_content(pattern, [path], [context]) — searches for text INSIDE the documents (a content/grep search). Give a concrete keyword, number, unit, or short phrase; it returns the matching lines with their file and line number. This is your MAIN tool: it jumps you straight to a fact without reading whole files. Matching is case-insensitive substring, so use a SHORT exact term (a single word, a number, or a unit), NOT a whole sentence and NOT a glob like "*length*". To try several wordings at once, join them with OR (e.g. "crew OR צוות"). Two extras: pattern="## " lists every section heading (the document's table of contents); context=N also returns the N lines AFTER each match, so searching a heading with context≈25 pulls that whole section's body.
-3. read_text_file(path, [head], [tail]) — returns a file's text. Use the EXACT path shown by list_directory. A file can be long; pass head=N or tail=N to read only the first/last N lines instead of the whole file. A very long read may come back ending in a "[TRUNCATED ...]" notice — the rest was NOT shown.
-
-## How to find the answer
-First call list_directory. Then navigate with whichever of these two methods fits — and combine them. Each document is organised under section headings, like a manual with a table of contents.
-
-METHOD A — jump straight to a fact (best for a specific value, e.g. a dimension, speed, weight, limit):
-1. Map the question's everyday wording to the term/unit the document would use, by MEANING not by matching words. For example:
-   - "how long is it / from nose to tail" ↔ "אורך" / "length"
-   - "how tall / how high" ↔ a "Height" / "גובה" row
-   - "how heavy / what does it weigh" ↔ a "Weight" / "Mass" / "משקל" entry
-   - an abbreviation in the question may be spelled out in the document (or vice-versa); a value may be in a different unit than you expected.
-2. search_content that term — try the question's language first (e.g. Hebrew). Facts are very often stored as TABLE ROWS like "label | value" (e.g. "אורך כולל | 19.76 m"), so the matching line itself frequently already contains the answer.
-
-METHOD B — read the catalog (best for a named topic or procedure, or when you don't know the exact keyword — like a person skimming a manual's contents):
-1. List the catalog: search_content(pattern="## ") to get every section heading with its line number. (The data document also has an explicit "תוכן עניינים" / table of contents near its top.)
-2. Reason about which heading's topic would contain the answer, ranked by relevance.
-3. Read that section: search_content for the heading's text with context≈25 to pull its body (or read_text_file around that line). Read it carefully, including any table.
-
-Then extract the exact value (number + unit, term, or short list) and give a direct final answer.
-
-## If a search returns few or no hits — switch to the catalog, don't keep guessing
-The documents use technical terms and ABBREVIATIONS that often differ from the question's everyday wording. The right section may be titled with a code, not the word you searched. For example:
-   - "maximum forward speed" is labelled "VNE"; "rotor RPM range" is labelled "סל\"ד" / "NR".
-So after just ONE keyword search that does not pinpoint the answer, do NOT keep guessing more synonyms and do NOT conclude it's missing. Switch to METHOD B: call search_content(pattern="## ") to list every section heading, pick the heading whose TOPIC matches the question (even if its words are different from the question's), and read that section with context≈25. Only say "this is not in the documents" AFTER the catalog shows no relevant section AND several different searches have turned up nothing.
-
-## Mistakes to avoid
-- search_content needs a short exact substring (or a few joined with OR). If a search returns nothing, do NOT repeat similar searches — list the headings with "## " and navigate by section instead. Never fall back to reading a whole file blindly.
-- Trust what your tools return. Do NOT assume more files exist elsewhere, or that a result is "only a snippet", and start over. Build on what you have already seen; never repeat an identical call.
-- Use exact paths from list_directory. A failed read does NOT mean the information is unavailable — fix the path, or reuse content you already retrieved.
-
-## Final answer
-- Ground every statement in the documents; never invent, infer, or estimate facts.
-- Answer in the SAME language as the question.
-- Be concise: one or two sentences containing the exact number(s)/unit(s), term, or short list requested. Then stop calling tools."""
+# The system prompt is owned by the agent package (packages/<agent>/system_prompt.md);
+# it is loaded via harness.package.load_package() and passed in as `system_prompt`.
 
 
 # ── Content search (grep) ──────────────────────────────────────────────────────
@@ -71,42 +34,8 @@ So after just ONE keyword search that does not pinpoint the answer, do NOT keep 
 # is the MCP host, so it implements its own content search and dispatches it
 # locally (never forwarded to the MCP server).
 CONTENT_SEARCH_NAME = "search_content"
-CONTENT_SEARCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": CONTENT_SEARCH_NAME,
-        "description": (
-            "Search for text INSIDE the documents (a content/grep search). Give a "
-            "concrete keyword, number, unit, or short phrase; returns the matching lines "
-            "with their file and line number. This is the fastest way to locate a fact "
-            "without reading whole files. Matching is case-insensitive substring, so use a "
-            "short exact term (a single word, number, or unit), not a whole sentence or a "
-            "glob like '*length*'. To try alternatives in one call, join them with OR "
-            "(e.g. 'crew OR צוות' matches a line containing either). Use pattern='## ' to "
-            "list every section heading (a table of contents), and pass context=N to also "
-            "return the N lines AFTER each match — search a section's heading with "
-            "context=25 to read that section's body."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "Text to find inside the documents (keyword, number, unit, or short phrase). Join alternatives with OR. Use '## ' to list section headings.",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "Optional file (or list of files) to restrict the search to. Defaults to all documents.",
-                },
-                "context": {
-                    "type": "integer",
-                    "description": "Number of lines to also return AFTER each match (like grep -A). Use ~20-30 to read a section body after matching its heading. Default 0.",
-                },
-            },
-            "required": ["pattern"],
-        },
-    },
-}
+# The search_content tool CONTRACT (description + JSON schema) lives in the agent
+# package; this module only IMPLEMENTS it (see _grep_corpus / _dispatch_tool).
 
 
 def _scan_roots(base: Path, path) -> "list[Path] | str":
@@ -214,25 +143,6 @@ def load_fs_server_params(mcp_json_path: str, server_name: str, corpus_dir: str)
             base = [a for a in spec.get("args", []) if not a.startswith("/")]
             args = base
     return StdioServerParameters(command=command, args=[*args, corpus_dir])
-
-
-def mcp_tools_to_openai(tools: Any, allowlist: list[str]) -> list[dict]:
-    """Convert MCP tool definitions to OpenAI function-tool specs (allowlisted)."""
-    out = []
-    for t in tools.tools:
-        if t.name not in allowlist:
-            continue
-        out.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": (t.description or "")[:1024],
-                    "parameters": t.inputSchema or {"type": "object", "properties": {}},
-                },
-            }
-        )
-    return out
 
 
 @dataclass
@@ -500,8 +410,8 @@ async def answer_question(
 ) -> AgentResult:
     """Run the tool-using loop for a single question, streaming progress via on_event.
 
-    system_prompt overrides the default module SYSTEM_PROMPT (e.g. when an agent
-    package supplies its own prompt).
+    system_prompt and the tool set come from the agent package (the caller loads
+    it via harness.package and passes them in).
 
     on_event(kind, *args) is called with:
       ("speak_start", step)         model is about to generate text
@@ -519,14 +429,14 @@ async def answer_question(
     max_steps = int(cfg.get("max_steps", 8))
     temperature = float(cfg.get("temperature", 0))
 
-    # Advertise the harness-implemented content search alongside the MCP tools,
-    # unless the caller already included it.
+    # The full tool set (incl. search_content) is supplied by the caller, built from
+    # the agent package's tool contracts. This module only IMPLEMENTS them.
+    if not system_prompt:
+        raise ValueError("system_prompt is required (provided by the agent package)")
     tools = list(oai_tools)
-    if not any(t.get("function", {}).get("name") == CONTENT_SEARCH_NAME for t in tools):
-        tools.append(CONTENT_SEARCH_TOOL)
 
     messages = [
-        {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Allowed corpus directory: {corpus_dir}\n\nQuestion: {question}"},
     ]
     result = AgentResult()
@@ -673,12 +583,12 @@ async def answer_question_ollama(
     temperature = float(cfg.get("temperature", 0))
     timeout = int(cfg.get("request_timeout_s", 180))
 
+    if not system_prompt:
+        raise ValueError("system_prompt is required (provided by the agent package)")
     tools = list(oai_tools)
-    if not any(t.get("function", {}).get("name") == CONTENT_SEARCH_NAME for t in tools):
-        tools.append(CONTENT_SEARCH_TOOL)
 
     messages = [
-        {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Allowed corpus directory: {corpus_dir}\n\nQuestion: {question}"},
     ]
     result = AgentResult()

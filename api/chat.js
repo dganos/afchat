@@ -3,8 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { createOllama } = require('ollama-ai-provider')
-const { streamText } = require('ai')
-const { z } = require('zod')
+const { streamText, jsonSchema } = require('ai')
 const mammoth = require('mammoth')
 const { PDFParse } = require('pdf-parse')
 
@@ -49,18 +48,21 @@ const ollamaModel = (name) => ollama(name, {
 
 // ── Agent Package (model + system prompt + tools + runtime) ───────────────────
 
-// Built-in fallback so the app still boots if no package file is present.
+// Minimal last-resort fallback so the app still boots if the package is missing.
+// The real agent (prompt, tool contracts, runtime) is the package — this is only a
+// degraded safety net, not a second source of truth.
 const FALLBACK_AGENT = {
   name: 'builtin-default',
   model: {},
   runtime: { max_steps: 10, max_tool_result_chars: 8000, temperature: 0 },
-  tools: [{ name: 'list_directory' }, { name: 'read_text_file' }, { name: 'search_files' }],
-  toolAllowlist: ['list_directory', 'read_text_file', 'search_files'],
-  system_prompt: `You are a document-grounded assistant. You MUST ONLY answer based on the documents in your library — NEVER from your own knowledge. Use search_files to find passages and read_text_file to confirm values before answering, and answer in the same language as the question.`,
+  tools: [{ name: 'list_directory' }, { name: 'read_text_file' }, { name: 'search_content' }],
+  toolAllowlist: ['list_directory', 'read_text_file', 'search_content'],
+  system_prompt: `You are a document-grounded assistant. You MUST ONLY answer based on the documents in your library — NEVER from your own knowledge. Use search_content to find passages and read_text_file to confirm values before answering, and answer in the same language as the question.`,
 }
 
 const AGENT = (() => {
-  const file = process.env.AGENT_PACKAGE || path.join(__dirname, 'packages/gemma4-qa.json')
+  // The shared agent package — the single source of truth, also loaded by afchat_lab.
+  const file = process.env.AGENT_PACKAGE || path.join(__dirname, '../packages/gemma4-qa')
   try {
     const p = loadPackage(file)
     console.log(`[api] loaded agent package: ${p.name} (model=${p.model.id}, tools=${p.toolAllowlist.join(',')}, steps=${p.runtime.max_steps}, cap=${p.runtime.max_tool_result_chars})`)
@@ -110,100 +112,108 @@ async function extractText(fullPath) {
   return fs.readFileSync(fullPath, 'utf-8')
 }
 
-// Registry keyed by the package's canonical tool names. The agent package's
-// system prompt refers to these names, so the exposed tools must match them.
-const TOOL_REGISTRY = {
-  list_directory: {
-    description: 'List all documents available in the document library. Use this first to understand what documents exist before searching or reading.',
-    parameters: z.object({
-      directory: z.string().describe('Directory to list. Use "." for the root documents folder.')
-    }),
-    execute: async ({ directory }) => {
-      try {
-        const targetDir = directory === '.' ? DOCS_PATH : safePath(directory)
-        const files = walkDir(targetDir)
-        return { files, count: files.length }
-      } catch (err) {
-        return { error: err.message }
+// Tool IMPLEMENTATIONS only — the model-facing CONTRACTS (descriptions + JSON
+// schemas) live in the agent package and are bound to these by name below. Param
+// names match the package's canonical schema (path / head / tail / pattern /
+// context), so the lab (MCP) and Aristo present the model identical tools.
+
+// search_content: a content/grep search mirroring afchat_lab's _grep_corpus —
+// case-insensitive substring; "A OR B" matches a line containing either; context=N
+// returns the N lines AFTER each match; sandboxed to DOCS_PATH.
+async function grepCorpus({ pattern, path: scope, context }) {
+  if (!pattern) return { error: "search_content needs a non-empty 'pattern'." }
+  const ctx = Math.max(0, Math.min(parseInt(context, 10) || 0, 60))
+  const needles = pattern.split(/\s+OR\s+/).map(s => s.trim().toLowerCase()).filter(Boolean)
+  const terms = needles.length ? needles : [pattern.trim().toLowerCase()]
+  const LINE_CAP = 300, MAX_MATCHES = 40
+
+  let files
+  if (!scope) {
+    files = walkDir(DOCS_PATH)
+  } else {
+    files = []
+    for (const s of (Array.isArray(scope) ? scope : [scope])) {
+      if (!s) continue
+      const full = safePath(s)                       // throws if outside DOCS_PATH
+      if (!fs.existsSync(full)) continue
+      if (fs.statSync(full).isDirectory()) {
+        files.push(...walkDir(full).map(f => path.relative(DOCS_PATH, path.join(full, f))))
+      } else {
+        files.push(path.relative(DOCS_PATH, full))
       }
     }
-  },
+    files = [...new Set(files)]
+  }
 
-  read_text_file: {
-    description: 'Read the full content of a specific document file. Use when you need to find detailed information in a file.',
-    parameters: z.object({
-      filepath: z.string().describe('Path to the file relative to the documents folder, e.g. "manual.md" or "subdir/specs.md"')
-    }),
-    execute: async ({ filepath }) => {
-      try {
-        const fullPath = safePath(filepath)
-        if (!fs.existsSync(fullPath)) {
-          return { error: `File not found: ${filepath}` }
+  const clip = s => { s = s.trim(); return s.length <= LINE_CAP ? s : s.slice(0, LINE_CAP) + '…' }
+  const blocks = []
+  for (const file of files) {
+    let content
+    try { content = await extractText(path.join(DOCS_PATH, file)) } catch { continue }
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      if (terms.some(t => lines[i].toLowerCase().includes(t))) {
+        const end = Math.min(lines.length, i + 1 + ctx)
+        const block = []
+        for (let j = i; j < end; j++) block.push(`${file}:${j + 1}: ${clip(lines[j])}`)
+        blocks.push(block.join('\n'))
+        if (blocks.length >= MAX_MATCHES) {
+          return { text: blocks.join(ctx ? '\n\n' : '\n') + `\n\n[showing the first ${MAX_MATCHES} matches; refine the pattern for fewer]` }
         }
-        const content = await extractText(fullPath)
-        const cap = (AGENT.runtime && AGENT.runtime.max_tool_result_chars) || 8000
-        if (content.length > cap) {
-          // Visible truncation marker — matches the contract the package's system
-          // prompt relies on, so the model knows the rest of the file wasn't shown.
-          return {
-            filepath,
-            content: content.slice(0, cap) +
-              `\n\n[TRUNCATED: showed the first ${cap} of ${content.length} characters; the rest of this file was NOT shown. Use search_files with a keyword from the question to locate the passage.]`,
-            truncated: true,
-            totalLength: content.length
-          }
-        }
-        return { filepath, content, truncated: false, totalLength: content.length }
-      } catch (err) {
-        return { error: err.message }
-      }
-    }
-  },
-
-  search_files: {
-    description: 'Search for text INSIDE files (content match, not file names). Multi-word queries are AND-matched at the document level: a document is included only if ALL terms appear somewhere in it. For each matching document the tool returns the best lines. After this, call read_text_file on the most likely document — do not assume information is absent based on search alone, because specs in tables often span multiple lines.',
-    parameters: z.object({
-      query: z.string().describe('Search terms. Case-insensitive. Multiple words are AND-matched across the whole document.')
-    }),
-    execute: async ({ query }) => {
-      try {
-        const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1)
-        if (terms.length === 0) return { query, documents: [], total: 0 }
-
-        const files = walkDir(DOCS_PATH)
-        const documents = []
-        for (const file of files) {
-          const fullPath = path.join(DOCS_PATH, file)
-          const content = await extractText(fullPath)
-          const lower = content.toLowerCase()
-          if (!terms.every(t => lower.includes(t))) continue
-
-          const scored = []
-          content.split('\n').forEach((line, i) => {
-            const ll = line.toLowerCase()
-            const hits = terms.filter(t => ll.includes(t)).length
-            if (hits > 0) scored.push({ line: i + 1, text: line.trim(), hits })
-          })
-          scored.sort((a, b) => b.hits - a.hits || a.line - b.line)
-          documents.push({
-            file,
-            topLines: scored.slice(0, 4).map(s => ({ line: s.line, text: s.text }))
-          })
-        }
-        return { query, documents, total: documents.length }
-      } catch (err) {
-        return { error: err.message }
       }
     }
   }
+  if (!blocks.length) return { text: `No lines containing ${terms.map(t => `"${t}"`).join(' / ')} were found in the documents.` }
+  return { text: blocks.join(ctx ? '\n\n' : '\n') }
 }
 
-// Expose only the tools the agent package allowlists (under the package's names).
+const TOOL_IMPLS = {
+  list_directory: async ({ path: dir }) => {
+    try {
+      const target = (!dir || dir === '.') ? DOCS_PATH : safePath(dir)
+      const files = walkDir(target)
+      return { files, count: files.length }
+    } catch (err) { return { error: err.message } }
+  },
+
+  read_text_file: async ({ path: filepath, head, tail }) => {
+    try {
+      const fullPath = safePath(filepath)
+      if (!fs.existsSync(fullPath)) return { error: `File not found: ${filepath}` }
+      let content = await extractText(fullPath)
+      const totalLength = content.length
+      if (head) content = content.split('\n').slice(0, head).join('\n')
+      else if (tail) content = content.split('\n').slice(-tail).join('\n')
+      const cap = (AGENT.runtime && AGENT.runtime.max_tool_result_chars) || 8000
+      if (content.length > cap) {
+        return {
+          filepath,
+          content: content.slice(0, cap) +
+            `\n\n[TRUNCATED: showed the first ${cap} of ${totalLength} characters; the rest was NOT shown. Use search_content with a keyword to locate the passage.]`,
+          truncated: true, totalLength,
+        }
+      }
+      return { filepath, content, truncated: false, totalLength }
+    } catch (err) { return { error: err.message } }
+  },
+
+  search_content: grepCorpus,
+}
+
+// Build the AI SDK tool set from the PACKAGE's contracts (description + JSON schema),
+// binding each to its implementation by name. The descriptions/schemas come from the
+// package — this file holds none of them.
 const tools = Object.fromEntries(
-  AGENT.toolAllowlist.filter(n => TOOL_REGISTRY[n]).map(n => [n, TOOL_REGISTRY[n]])
+  AGENT.tools
+    .filter(t => TOOL_IMPLS[t.name])
+    .map(t => [t.name, {
+      description: t.description || '',
+      parameters: jsonSchema(t.parameters || { type: 'object', properties: {} }),
+      execute: TOOL_IMPLS[t.name],
+    }])
 )
-const unknownTools = AGENT.toolAllowlist.filter(n => !TOOL_REGISTRY[n])
-if (unknownTools.length) console.warn(`[api] agent package references tools with no implementation: ${unknownTools.join(', ')}`)
+const missing = AGENT.toolAllowlist.filter(n => !TOOL_IMPLS[n])
+if (missing.length) console.warn(`[api] agent package tools with no implementation: ${missing.join(', ')}`)
 
 // ── Auto Pre-Search ──────────────────────────────────────────────────────────
 

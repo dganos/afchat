@@ -1,17 +1,25 @@
-// Agent packages: a self-contained bundle of MODEL + SYSTEM PROMPT + TOOLS
-// (plus the runtime knobs they were tuned with). The source of truth is the YAML
-// in afchat_lab/packages/; a JSON mirror is exported for this app to load without
-// a YAML dependency (see afchat_lab/scripts/export_package.py).
+// Agent packages: the single source of truth for an agent's inference behaviour —
+// MODEL + RUNTIME + TOOL CONTRACTS (name/description/JSON-schema) + SYSTEM PROMPT.
+// The SAME package folder is loaded by afchat_lab (Python) and by this app; neither
+// holds the prompt, tool descriptions, or runtime knobs internally.
 //
-// loadPackage() returns the package object with a `.toolAllowlist` convenience.
+//   packages/gemma4-qa/package.json     — model, runtime, tools[{name,description,parameters}]
+//   packages/gemma4-qa/system_prompt.md — the system prompt text
+//
+// loadPackage() returns the package object with `.system_prompt` and a
+// `.toolAllowlist` convenience.
 
 const fs = require('fs')
+const path = require('path')
 
-function loadPackage(file) {
-  const pkg = JSON.parse(fs.readFileSync(file, 'utf-8'))
-  for (const key of ['name', 'model', 'tools', 'system_prompt']) {
-    if (!pkg[key]) throw new Error(`agent package ${file} missing required key: ${key}`)
+function loadPackage(pkgPath) {
+  const jsonPath = fs.statSync(pkgPath).isDirectory() ? path.join(pkgPath, 'package.json') : pkgPath
+  const dir = path.dirname(jsonPath)
+  const pkg = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'))
+  for (const key of ['name', 'model', 'tools', 'system_prompt_file']) {
+    if (!pkg[key]) throw new Error(`agent package ${jsonPath} missing required key: ${key}`)
   }
+  pkg.system_prompt = fs.readFileSync(path.join(dir, pkg.system_prompt_file), 'utf-8').trim()
   pkg.runtime = pkg.runtime || {}
   pkg.toolAllowlist = pkg.tools.map(t => t.name)
   return pkg

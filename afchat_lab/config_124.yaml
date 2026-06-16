@@ -10,29 +10,18 @@ paths:
   lmstudio_mcp_json: ~/.lmstudio/mcp.json
   mcp_server_name: filesystem
 
-# Runtime backend: Ollama, driven via its NATIVE /api/chat exactly as Aristo does
-# (the OpenAI /v1 shim doesn't route the custom gemma renderer and ignores num_ctx).
-# The Ollama server must be running (Aristo starts it with OLLAMA_MODELS pointed at
-# its bundled model store; for the lab just `ollama serve`). No load/unload needed —
-# Ollama auto-loads on first request.
+# The AGENT — model, system prompt, tool contracts, runtime knobs, and context
+# window — is defined entirely by this package, the single source of truth shared
+# with the Aristo app. This config only supplies the test ENVIRONMENT (corpus,
+# testset, judge, backend, and which models to run).
+package: ../packages/gemma4-qa
+
+# Runtime backend: Ollama, native /api/chat exactly as Aristo does (the OpenAI /v1
+# shim doesn't route the custom gemma renderer). Just `ollama serve` — no
+# load/unload, Ollama auto-loads on first request.
 ollama:
   base_url: http://localhost:11434
   request_timeout_s: 180
-  # The context window (num_ctx). Must be large enough that one document read or grep
-  # result doesn't evict the system prompt + history (a 4096 ctx caused
-  # overflow→amnesia→tool-loop). gemma-4-e4b supports up to 131072.
-  num_ctx: 32768
-
-agent:
-  max_steps: 8
-  temperature: 0
-  max_tool_result_chars: 16000
-  tool_allowlist:
-    - list_directory
-    - read_text_file
-    # search_files (the MCP server's filename glob) is intentionally omitted — it
-    # cannot search file CONTENT. The harness injects its own search_content (grep)
-    # tool instead; see harness/agent.py.
 
 judge:
   model: claude-sonnet-4-6

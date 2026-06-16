@@ -31,14 +31,13 @@ from openai import AsyncOpenAI
 
 from harness import judge as judging
 from harness.agent import (
-    CONTENT_SEARCH_NAME,
     AgentResult,
     answer_question,
     answer_question_claude,
     answer_question_ollama,
     load_fs_server_params,
-    mcp_tools_to_openai,
 )
+from harness.package import load_package, openai_tools
 
 LAB = Path(__file__).resolve().parent.parent
 
@@ -241,6 +240,15 @@ async def run(args: argparse.Namespace) -> None:
         print("No models selected.", file=sys.stderr)
         return
 
+    # The agent — system prompt + tool contracts + runtime + context window — comes
+    # entirely from the agent package, the single source of truth shared with Aristo.
+    pkg = load_package((LAB / cfg["package"]).resolve())
+    print(f"Agent package: {pkg.summary()}")
+    pkg_tools = openai_tools(pkg)
+    pkg_ctx = int(pkg.model.get("context_length", 8192))
+    _timeout = cfg.get("ollama", cfg.get("lmstudio", {})).get("request_timeout_s", 180)
+    runtime = {**pkg.runtime, "request_timeout_s": _timeout}
+
     judge_model = cfg["judge"].get("model", "claude-sonnet-4-6")
 
     # No Claude, no test. Verify the judge before spending any model inference.
@@ -257,7 +265,7 @@ async def run(args: argparse.Namespace) -> None:
     if is_ollama:
         ocfg = cfg["ollama"]
         ollama_base = ocfg.get("base_url", "http://localhost:11434")
-        num_ctx = int(ocfg.get("num_ctx", 8192))
+        num_ctx = pkg_ctx  # context window comes from the agent package
         manage = False  # Ollama auto-loads on first request; no lms load/unload
         ctx = num_ctx
         client = None
@@ -265,7 +273,7 @@ async def run(args: argparse.Namespace) -> None:
     else:
         ollama_base, num_ctx = None, None
         manage = cfg["lmstudio"].get("manage_models", True) and not args.no_manage
-        ctx = int(cfg["lmstudio"].get("context_length", 8192))
+        ctx = pkg_ctx  # context window comes from the agent package
         if manage:
             print("Unloading any currently loaded models (clean slate) ...", flush=True)
             model_unload_all()
@@ -337,23 +345,25 @@ async def run(args: argparse.Namespace) -> None:
                 ar = AgentResult(error=load_err, finish="error")
                 print(f"  A: [error] {_clip(load_err, 200)}", flush=True)
             elif is_claude:
+                # Reference baseline: Claude via the Agent SDK with its own tools —
+                # not the packaged agent, so it keeps its own minimal prompt.
                 ar = await answer_question_claude(
-                    corpus_dir, q["question"], cfg["agent"],
+                    corpus_dir, q["question"], runtime,
                     on_event=_make_printer(run_log), model=mid,
                 )
                 if not ar.answer and ar.error:
                     print(f"  A: [error] {_clip(ar.error, 200)}", flush=True)
             elif is_ollama:
                 ar = await answer_question_ollama(
-                    session, oai_tools, ollama_base, mid, corpus_dir, q["question"], cfg["agent"],
-                    on_event=_make_printer(run_log), num_ctx=num_ctx,
+                    session, oai_tools, ollama_base, mid, corpus_dir, q["question"], runtime,
+                    on_event=_make_printer(run_log), system_prompt=pkg.system_prompt, num_ctx=num_ctx,
                 )
                 if not ar.answer and ar.error:
                     print(f"  A: [error] {_clip(ar.error, 200)}", flush=True)
             else:
                 ar = await answer_question(
-                    session, oai_tools, client, mid, corpus_dir, q["question"], cfg["agent"],
-                    on_event=_make_printer(run_log),
+                    session, oai_tools, client, mid, corpus_dir, q["question"], runtime,
+                    on_event=_make_printer(run_log), system_prompt=pkg.system_prompt,
                 )
                 if not ar.answer and ar.error:
                     print(f"  A: [error] {_clip(ar.error, 200)}", flush=True)
@@ -384,14 +394,12 @@ async def run(args: argparse.Namespace) -> None:
     async with stdio_client(params) as (r, w):
         async with ClientSession(r, w) as session:
             await session.initialize()
-            tools = await session.list_tools()
-            oai_tools = mcp_tools_to_openai(tools, cfg["agent"]["tool_allowlist"])
-            mcp_names = [t["function"]["name"] for t in oai_tools]
-            # answer_question also injects the harness-implemented content-search tool.
-            print(f"Tools exposed to candidates: {mcp_names + [CONTENT_SEARCH_NAME]}  "
-                  f"(MCP: {mcp_names}; harness-injected: {CONTENT_SEARCH_NAME})")
+            # The model-facing tool set is the agent package's contracts; the MCP
+            # server (list_directory/read_text_file) and the harness grep
+            # (search_content) are just the implementations behind those names.
+            print(f"Tools exposed to candidates (from package): {pkg.tool_names}")
             for m in models:
-                run_record["models"].append(await eval_model(session, oai_tools, m))
+                run_record["models"].append(await eval_model(session, pkg_tools, m))
 
     write_outputs(run_record, testset, stamp, rdir=rdir)
     if live_path.exists():

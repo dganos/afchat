@@ -11,6 +11,11 @@ paths:
   lmstudio_mcp_json: ~/.lmstudio/mcp.json
   mcp_server_name: filesystem
 
+# The AGENT (model + system prompt + tool contracts + runtime + context window) is
+# the shared package — the single source of truth, also loaded by Aristo. This
+# config only supplies the test environment (corpus, testset, judge, backend, models).
+package: ../packages/gemma4-qa
+
 lmstudio:
   base_url: http://localhost:1234/v1
   api_key: lm-studio          # LM Studio ignores the value, but the SDK needs one
@@ -21,18 +26,6 @@ lmstudio:
   # chain-of-thought, or read_text_file output overflows and facts get lost.
   # For 8 GB targets, drop this per-model via the `context_length` model override.
   context_length: 16384       # load context window; bigger = more RAM.
-
-agent:
-  max_steps: 8                # max tool-use turns before forcing a final answer
-  temperature: 0
-  # Sized to fit the largest corpus doc (~14k chars) in a single read so the model
-  # never silently loses the part of the document that holds the answer.
-  max_tool_result_chars: 16000
-  # Read-only subset of the filesystem server's tools we expose to the candidate.
-  tool_allowlist:
-    - list_directory
-    - read_text_file
-    - search_files
 
 judge:
   # Claude Agent SDK is the only judge. No Claude, no test (the run preflights and

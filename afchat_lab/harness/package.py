@@ -1,56 +1,66 @@
-"""Agent packages: a self-contained (model + system prompt + tools) bundle.
+"""Agent packages: the single source of truth for an agent's inference behaviour.
 
-A *package* is everything needed to reproduce one agent's behaviour — which model
-to load, the system prompt that drives it, the tools it may call, and the runtime
-knobs they were tuned with. Packages live in `packages/*.yaml`; load one with
-`load_package()` and feed it to the agent loop:
+A *package* is a folder (e.g. `packages/gemma4-qa/`) holding everything needed to
+reproduce one agent: the model to load, the runtime knobs, the tool CONTRACTS
+(name + description + JSON-schema the model sees), and the system prompt. Both
+afchat_lab (Python) and the Aristo app (JS) load the SAME package and supply only
+the tool *implementations* for their runtime — neither holds the prompt, the tool
+descriptions, or the runtime knobs internally.
 
-    pkg = load_package("packages/gemma4-qa.yaml")
-    oai_tools = mcp_tools_to_openai(mcp_tools, pkg.tool_allowlist)
-    await answer_question(session, oai_tools, client, pkg.model["id"], corpus_dir,
+Canonical format (read directly by both, no derived copies):
+    packages/gemma4-qa/package.json    — model, runtime, tools[{name,description,parameters}]
+    packages/gemma4-qa/system_prompt.md — the system prompt text
+
+    pkg = load_package("../packages/gemma4-qa")
+    tools = openai_tools(pkg)   # [{type:function, function:{name,description,parameters}}]
+    await answer_question(session, tools, client, pkg.model["id"], corpus_dir,
                           question, pkg.runtime, system_prompt=pkg.system_prompt)
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
-
-import yaml
 
 
 @dataclass
 class AgentPackage:
-    """Model + system prompt + tools + runtime, loaded from a package YAML."""
+    """Model + runtime + tool contracts + system prompt, loaded from a package folder."""
 
     name: str
     description: str
     model: dict
     runtime: dict
-    tools: list[dict]
+    tools: list[dict]          # each: {name, description, parameters(JSON schema)}
     system_prompt: str
+    dir: Path
     version: int = 1
 
     @property
-    def tool_allowlist(self) -> list[str]:
-        """Tool names to expose to the model (schemas resolved by the MCP host)."""
+    def tool_names(self) -> list[str]:
         return [t["name"] for t in self.tools]
 
     def summary(self) -> str:
         return (f"{self.name} v{self.version} | model={self.model.get('id')} | "
-                f"tools={self.tool_allowlist} | "
-                f"ctx={self.model.get('context_length')} steps={self.runtime.get('max_steps')} "
-                f"cap={self.runtime.get('max_tool_result_chars')}")
+                f"tools={self.tool_names} | ctx={self.model.get('context_length')} "
+                f"steps={self.runtime.get('max_steps')} cap={self.runtime.get('max_tool_result_chars')}")
 
 
 def load_package(path: str | Path) -> AgentPackage:
-    """Parse a package YAML into an AgentPackage. Raises on missing required keys."""
-    d = yaml.safe_load(Path(path).read_text())
-    missing = [k for k in ("name", "model", "tools", "system_prompt") if k not in d]
+    """Load a package from its folder (or its package.json). Raises on missing keys."""
+    p = Path(path)
+    pkg_json = p / "package.json" if p.is_dir() else p
+    pkg_dir = pkg_json.parent
+    d = json.loads(pkg_json.read_text())
+
+    missing = [k for k in ("name", "model", "tools", "system_prompt_file") if k not in d]
     if missing:
-        raise ValueError(f"package {path} missing required keys: {missing}")
+        raise ValueError(f"package {pkg_json} missing required keys: {missing}")
     if "id" not in d["model"]:
-        raise ValueError(f"package {path}: model.id is required")
+        raise ValueError(f"package {pkg_json}: model.id is required")
+
+    system_prompt = (pkg_dir / d["system_prompt_file"]).read_text().strip()
     return AgentPackage(
         name=d["name"],
         version=int(d.get("version", 1)),
@@ -58,5 +68,16 @@ def load_package(path: str | Path) -> AgentPackage:
         model=d["model"],
         runtime=d.get("runtime", {}),
         tools=d["tools"],
-        system_prompt=d["system_prompt"].strip(),
+        system_prompt=system_prompt,
+        dir=pkg_dir,
     )
+
+
+def openai_tools(pkg: AgentPackage) -> list[dict]:
+    """Build OpenAI/Ollama function-tool specs from the package's tool contracts."""
+    return [
+        {"type": "function",
+         "function": {"name": t["name"], "description": t["description"],
+                      "parameters": t.get("parameters", {"type": "object", "properties": {}})}}
+        for t in pkg.tools
+    ]
