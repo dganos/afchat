@@ -23,23 +23,34 @@ software.
    self-sufficient. (Validating on a box that has Ollama installed would hide a missing
    dependency — if anything, uninstall/stop a system Ollama first so `:11434` is free.)
 
-1. **Obtain both zips** via whatever channel was set up for this box (GitHub Release
-   asset, etc.). You need both `Aristo-Windows-app.zip` and `Aristo-Windows-models.zip`.
+1. **Download the bundle from the GitHub Release** `win-bundle-20260616` in
+   `dganos/afchat`. The model is split into parts (GitHub caps assets at 2 GiB). With
+   the GitHub CLI authenticated:
+   ```
+   gh release download win-bundle-20260616 -R dganos/afchat -D bundle
+   ```
+   You should get, in `bundle\`: `Aristo-Windows-app.zip`,
+   `Aristo-Windows-models.zip.part00`, `.part01`, `.part02`. (No `gh`? Download the 4
+   assets from the Release page in a browser.)
 
-2. **Extract BOTH into the same folder**, e.g. `C:\Aristo\`. After extracting both you
-   should have `C:\Aristo\win-unpacked\` containing `Aristo.exe` and a `resources\`
+2. **Reassemble the model zip** (cmd, inside `bundle\`):
+   ```
+   copy /b Aristo-Windows-models.zip.part00 + Aristo-Windows-models.zip.part01 + Aristo-Windows-models.zip.part02 Aristo-Windows-models.zip
+   ```
+   Optional integrity check against the Release notes' sha256:
+   `certutil -hashfile Aristo-Windows-models.zip SHA256`
+
+3. **Extract BOTH zips into the same folder**, e.g. `C:\Aristo\`. After extracting both
+   you should have `C:\Aristo\win-unpacked\` containing `Aristo.exe` and a `resources\`
    folder with `ollama\`, `models\`, and `documents\`.
 
    Sanity check before launching:
    - `win-unpacked\resources\ollama\ollama.exe` exists
-   - `win-unpacked\resources\ollama\lib\ollama\` contains several `*.dll` files
+   - `win-unpacked\resources\ollama\lib\ollama\` contains ~45+ `*.dll` files
      (ggml-base.dll, ggml-cpu-*.dll, …). **If `lib\ollama` is missing or nearly empty,
-     the bundle is bad** (built before the runtime fix) — report it; it needs a rebuild.
-   - `win-unpacked\resources\models\` is populated (manifests + blobs, ~3.6 GB)
+     the bundle is bad** — report it; it needs a rebuild.
+   - `win-unpacked\resources\models\` is populated (manifests + blobs, ~4.8 GB)
    - `win-unpacked\resources\documents\` has the `yanshuf-*.md` files
-
-3. **First run only:** if the machine lacks the Microsoft Visual C++ runtime, run
-   `win-unpacked\resources\ollama\vc_redist.x64.exe` once.
 
 4. **Launch** `win-unpacked\Aristo.exe`.
 
@@ -62,6 +73,9 @@ State clearly: did it launch and answer correctly from the bundle alone? Note an
 that required manual intervention (that's a seamlessness gap). Specifically flag:
 - "bundled ollama is incomplete / missing inference DLLs" → the bundle was built before
   the `lib/ollama` fix; it must be rebuilt on the Mac.
+- a "**vcruntime140.dll / msvcp140.dll** missing" error → the bundle ships these runtime
+  DLLs in `lib\ollama`, but if Windows still can't find them, install the **Microsoft
+  Visual C++ 2015–2022 x64 Redistributable** once (the box has internet). Flag it.
 - model didn't load / out-of-memory → note the RAM and any Ollama error from the logs.
 - any step where you had to install or configure something — production can't do that.
 

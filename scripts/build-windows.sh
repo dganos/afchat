@@ -161,17 +161,24 @@ else
   curl -L --fail -o "$OLLAMA_ZIP" "$OLLAMA_URL"
 fi
 
-echo "==> [3/5] Extracting CPU-only runtime"
-# Bundle the COMPLETE lib/ollama runtime (inference DLLs + runner), not a hand-picked
-# subset — newer Ollama needs more than ggml-base + ggml-cpu-*, and a partial set
-# fails on Windows with "missing inference DLLs". Exclude only the large GPU libs
-# (CUDA/cuBLAS/ROCm/HIP), which an 8 GB CPU-only target doesn't use.
-unzip -o "$OLLAMA_ZIP" \
-  "ollama.exe" "vc_redist.x64.exe" "lib/ollama/*" \
-  -x "lib/ollama/*cuda*" "lib/ollama/*cublas*" "lib/ollama/*rocm*" "lib/ollama/*hip*" \
-  -d resources/ollama/ >/dev/null
-echo "    $(du -sh resources/ollama | cut -f1) total"
-echo "    bundled DLLs: $(ls resources/ollama/lib/ollama 2>/dev/null | wc -l | tr -d ' ')"
+echo "==> [3/5] Extracting CPU runtime (full lib/ollama minus GPU)"
+# Extract ollama.exe + the WHOLE lib/ollama (a hand-picked subset misses DLLs and
+# fails on Windows with "missing inference DLLs"). The GPU runtimes live in nested
+# lib/ollama/cuda_v*/ (and rocm*/) dirs and are huge — drop them for an 8 GB CPU-only
+# target, but first promote the small MSVC runtime DLLs they carry up to lib/ollama/
+# so the CPU runners find them even if the box lacks the VC++ redistributable.
+# (unzip returns non-zero on unmatched patterns, harmless here — tolerate, then verify.)
+set +e
+unzip -o "$OLLAMA_ZIP" "ollama.exe" "lib/ollama/*" -d resources/ollama/ >/dev/null 2>&1
+set -e
+for d in resources/ollama/lib/ollama/cuda_v12 resources/ollama/lib/ollama/cuda_v13; do
+  [[ -d "$d" ]] && cp "$d"/msvcp140*.dll "$d"/vcruntime140*.dll "$d"/concrt140.dll "$d"/vccorlib140.dll \
+     resources/ollama/lib/ollama/ 2>/dev/null || true
+done
+rm -rf resources/ollama/lib/ollama/cuda_v* resources/ollama/lib/ollama/rocm* resources/ollama/lib/ollama/hip* 2>/dev/null || true
+[[ -f resources/ollama/ollama.exe && -f resources/ollama/lib/ollama/ggml-base.dll ]] \
+  || { echo "ERROR: ollama runtime extraction incomplete (ollama.exe / ggml-base.dll missing)." >&2; exit 1; }
+echo "    $(du -sh resources/ollama | cut -f1) total, $(ls resources/ollama/lib/ollama/*.dll 2>/dev/null | wc -l | tr -d ' ') CPU DLLs"
 
 # ── 3. Build win-unpacked ────────────────────────────────────────────────────
 echo "==> [4/5] Building win-unpacked (electron-builder --dir)"
