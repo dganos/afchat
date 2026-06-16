@@ -35,6 +35,7 @@ from harness.agent import (
     AgentResult,
     answer_question,
     answer_question_claude,
+    answer_question_ollama,
     load_fs_server_params,
     mcp_tools_to_openai,
 )
@@ -251,19 +252,30 @@ async def run(args: argparse.Namespace) -> None:
         sys.exit(2)
     print("Preflight OK.")
 
-    manage = cfg["lmstudio"].get("manage_models", True) and not args.no_manage
-    ctx = int(cfg["lmstudio"].get("context_length", 8192))
-
-    if manage:
-        print("Unloading any currently loaded models (clean slate) ...", flush=True)
-        model_unload_all()
+    # Runtime backend: Ollama (native /api/chat, like Aristo) or LM Studio (OpenAI /v1).
+    is_ollama = "ollama" in cfg
+    if is_ollama:
+        ocfg = cfg["ollama"]
+        ollama_base = ocfg.get("base_url", "http://localhost:11434")
+        num_ctx = int(ocfg.get("num_ctx", 8192))
+        manage = False  # Ollama auto-loads on first request; no lms load/unload
+        ctx = num_ctx
+        client = None
+        print(f"Backend: Ollama @ {ollama_base}  (num_ctx={num_ctx})")
+    else:
+        ollama_base, num_ctx = None, None
+        manage = cfg["lmstudio"].get("manage_models", True) and not args.no_manage
+        ctx = int(cfg["lmstudio"].get("context_length", 8192))
+        if manage:
+            print("Unloading any currently loaded models (clean slate) ...", flush=True)
+            model_unload_all()
+        client = AsyncOpenAI(
+            base_url=cfg["lmstudio"]["base_url"],
+            api_key=cfg["lmstudio"]["api_key"],
+            timeout=cfg["lmstudio"].get("request_timeout_s", 180),
+        )
 
     params = load_fs_server_params(paths["lmstudio_mcp_json"], paths["mcp_server_name"], corpus_dir)
-    client = AsyncOpenAI(
-        base_url=cfg["lmstudio"]["base_url"],
-        api_key=cfg["lmstudio"]["api_key"],
-        timeout=cfg["lmstudio"].get("request_timeout_s", 180),
-    )
 
     cfg_paths = cfg["paths"]
     rdir = LAB / cfg_paths.get("results_dir", "results")
@@ -328,6 +340,13 @@ async def run(args: argparse.Namespace) -> None:
                 ar = await answer_question_claude(
                     corpus_dir, q["question"], cfg["agent"],
                     on_event=_make_printer(run_log), model=mid,
+                )
+                if not ar.answer and ar.error:
+                    print(f"  A: [error] {_clip(ar.error, 200)}", flush=True)
+            elif is_ollama:
+                ar = await answer_question_ollama(
+                    session, oai_tools, ollama_base, mid, corpus_dir, q["question"], cfg["agent"],
+                    on_event=_make_printer(run_log), num_ctx=num_ctx,
                 )
                 if not ar.answer and ar.error:
                     print(f"  A: [error] {_clip(ar.error, 200)}", flush=True)

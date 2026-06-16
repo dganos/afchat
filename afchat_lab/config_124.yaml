@@ -10,16 +10,18 @@ paths:
   lmstudio_mcp_json: ~/.lmstudio/mcp.json
   mcp_server_name: filesystem
 
-lmstudio:
-  base_url: http://localhost:1234/v1
-  api_key: lm-studio
+# Runtime backend: Ollama, driven via its NATIVE /api/chat exactly as Aristo does
+# (the OpenAI /v1 shim doesn't route the custom gemma renderer and ignores num_ctx).
+# The Ollama server must be running (Aristo starts it with OLLAMA_MODELS pointed at
+# its bundled model store; for the lab just `ollama serve`). No load/unload needed —
+# Ollama auto-loads on first request.
+ollama:
+  base_url: http://localhost:11434
   request_timeout_s: 180
-  manage_models: true
-  # These manuals are far larger than a single context window; the agent relies on
-  # search_content to locate passages. The window must still be large enough that one
-  # document read or grep result doesn't evict the system prompt + history (a 4096 ctx
-  # caused overflow→amnesia→tool-loop). gemma-4-e4b supports up to 131072.
-  context_length: 32768
+  # The context window (num_ctx). Must be large enough that one document read or grep
+  # result doesn't evict the system prompt + history (a 4096 ctx caused
+  # overflow→amnesia→tool-loop). gemma-4-e4b supports up to 131072.
+  num_ctx: 32768
 
 agent:
   max_steps: 8
@@ -36,17 +38,13 @@ judge:
   model: claude-sonnet-4-6
   log_level: INFO
 
-# Hebrew-capable, tool-supporting candidate models.
+# Candidate models under test. IDs are Ollama tags (`ollama list`).
 models:
-  - id: dictalm-3.0-nemotron-12b-instruct
-    label: dictalm3-12b
-  - id: google/gemma-4-e4b
+  - id: gemma-4-e4b:latest
     label: gemma-4-e4b
-  - id: qwen/qwen3-4b
-    label: qwen3-4b
-  # Hosted reference candidate — driven via the Claude Agent SDK (not LM Studio).
-  # provider: claude makes the harness skip lms load/unload and use Claude's own
-  # read-only file tools. A strong-model baseline to calibrate the local models.
+  # Hosted reference candidate — driven via the Claude Agent SDK (not Ollama).
+  # provider: claude makes the harness use Claude's own read-only file tools.
+  # A strong-model baseline to calibrate the local model.
   - id: claude-sonnet-4-6
     label: claude-sonnet-ref
     provider: claude

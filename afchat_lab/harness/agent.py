@@ -15,6 +15,7 @@ import asyncio
 import json
 import os
 import re
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -623,3 +624,130 @@ async def answer_question_claude(
                 await asyncio.sleep(8 * (attempt + 1))
                 continue
             return result
+
+
+# ── Candidate: local model via Ollama's native /api/chat ───────────────────────
+# Mirrors the LM Studio path but talks to Ollama EXACTLY as Aristo does: the native
+# /api/chat endpoint (NOT the OpenAI /v1 shim, which doesn't route custom gemma
+# renderers and ignores num_ctx), tools as OpenAI-style function specs, the context
+# window via options.num_ctx. Non-streaming (like Aristo's simulateStreaming) so
+# structured tool_calls come back reliably. The filesystem tools still come from the
+# same MCP server; only the chat backend differs.
+
+def _ollama_chat(base_url: str, model: str, messages: list, tools, num_ctx, temperature: float, timeout: int) -> dict:
+    payload = {"model": model, "messages": messages, "stream": False,
+               "options": {"temperature": temperature}}
+    if num_ctx:
+        payload["options"]["num_ctx"] = int(num_ctx)
+    if tools:
+        payload["tools"] = tools
+    req = urllib.request.Request(
+        base_url.rstrip("/") + "/api/chat",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+async def answer_question_ollama(
+    session: ClientSession,
+    oai_tools: list[dict],
+    base_url: str,
+    model: str,
+    corpus_dir: str,
+    question: str,
+    cfg: dict,
+    on_event=None,
+    system_prompt: str | None = None,
+    num_ctx: int | None = None,
+) -> AgentResult:
+    """Run the tool-using loop for one question against Ollama's native /api/chat."""
+    def emit(*a):
+        if on_event:
+            on_event(*a)
+
+    corpus_dir = str(Path(corpus_dir).resolve())
+    cap = int(cfg.get("max_tool_result_chars", 6000))
+    max_steps = int(cfg.get("max_steps", 8))
+    temperature = float(cfg.get("temperature", 0))
+    timeout = int(cfg.get("request_timeout_s", 180))
+
+    tools = list(oai_tools)
+    if not any(t.get("function", {}).get("name") == CONTENT_SEARCH_NAME for t in tools):
+        tools.append(CONTENT_SEARCH_TOOL)
+
+    messages = [
+        {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
+        {"role": "user", "content": f"Allowed corpus directory: {corpus_dir}\n\nQuestion: {question}"},
+    ]
+    result = AgentResult()
+
+    async def chat(use_tools: bool) -> dict:
+        return await asyncio.to_thread(
+            _ollama_chat, base_url, model, messages,
+            tools if use_tools else None, num_ctx, temperature, timeout,
+        )
+
+    async def run_calls(tool_calls: list) -> None:
+        # Record the assistant turn (Ollama format) then execute each tool call.
+        messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
+        for tc in tool_calls:
+            fn = tc.get("function", {}) or {}
+            name = fn.get("name", "")
+            args = fn.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+            emit("tool", name, args)
+            output = await _dispatch_tool(session, name, args, cap, corpus_dir)
+            result.tool_calls.append({"name": name, "args": args, "chars": len(output)})
+            emit("tool_result", name, len(output))
+            messages.append({"role": "tool", "content": output, "tool_name": name})
+
+    for step in range(max_steps):
+        result.steps = step + 1
+        emit("speak_start", step)
+        try:
+            resp = await chat(True)
+        except Exception as e:  # noqa: BLE001
+            result.error = f"ollama /api/chat error: {e}"
+            result.finish = "error"
+            return result
+        msg = resp.get("message", {}) or {}
+        content = (msg.get("content") or "").strip()
+        tool_calls = msg.get("tool_calls") or []
+        # gemma may still leak a tool call as text — recover it as a real call.
+        if not tool_calls and content:
+            content, leaked = parse_text_tool_calls(content)
+            tool_calls = [{"function": {"name": c["name"], "arguments": json.loads(c["args"] or "{}")}}
+                          for c in leaked]
+        if content:
+            emit("token", content)
+        emit("speak_end")
+
+        if not tool_calls:
+            result.answer = content
+            result.finish = "answered"
+            return result
+        await run_calls(tool_calls)
+
+    # Out of steps: ask for a final answer with no tools.
+    messages.append({"role": "user",
+                     "content": "Based only on the documents you have read, give your final answer now."})
+    emit("speak_start", "final")
+    try:
+        resp = await chat(False)
+    except Exception as e:  # noqa: BLE001
+        result.error = f"final answer error: {e}"
+        result.finish = "error"
+        return result
+    content = ((resp.get("message", {}) or {}).get("content") or "").strip()
+    if content:
+        emit("token", content)
+    emit("speak_end")
+    result.answer = content
+    result.finish = "max_steps"
+    return result

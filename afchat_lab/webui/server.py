@@ -263,10 +263,18 @@ def aggregate_runs() -> JSONResponse:
 def state() -> dict:
     cfg = load_config()
     ts = load_testset()
+    # Backend block: Ollama (native /api) or LM Studio (OpenAI /v1), whichever the
+    # active config declares.
+    if "ollama" in cfg:
+        backend = {"runtime": "ollama", "base_url": cfg["ollama"].get("base_url"),
+                   "context_length": cfg["ollama"].get("num_ctx")}
+    else:
+        backend = {"runtime": "lmstudio",
+                   **{k: cfg["lmstudio"].get(k) for k in ("context_length", "base_url", "manage_models")}}
     return {
         "models": cfg["models"],
         "judge": cfg["judge"],
-        "lmstudio": {k: cfg["lmstudio"].get(k) for k in ("context_length", "base_url", "manage_models")},
+        "lmstudio": backend,
         "testset": {"name": ts["meta"]["name"], "count": len(ts["questions"])},
         "runs": list_runs(),
         "run_status": RUN["status"],
