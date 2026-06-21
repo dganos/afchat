@@ -96,7 +96,14 @@ app.whenReady().then(async () => {
     waitForPort('http://localhost:3001/health')
   ]
   if (isDev) waits.push(waitForPort('http://localhost:3000'))
-  await Promise.all(waits)
+  // A backend that never comes up must not leave the user staring at nothing:
+  // create the window regardless so the failure is visible (the API server
+  // surfaces its own errors, e.g. a missing agent package) instead of silent.
+  try {
+    await Promise.all(waits)
+  } catch (err) {
+    console.error('[main] backend not ready, opening window anyway:', err.message)
+  }
 
   mainWindow = new BrowserWindow({
     width: 1000,

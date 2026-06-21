@@ -45,7 +45,8 @@
     "files": [
       "main.js",
       "api/**/*",
-      "out/**/*"
+      "out/**/*",
+      "packages/**/*"
     ],
     "extraResources": [
       {

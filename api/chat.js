@@ -25,7 +25,7 @@ async function ensureCurrentModel() {
   try {
     const res = await fetch('http://localhost:11434/api/tags')
     const data = await res.json()
-    const fromPkg = resolveOllamaModel(data.models || [], AGENT.model && AGENT.model.id)
+    const fromPkg = resolveOllamaModel(data.models || [], AGENT?.model?.id)
     currentModel = fromPkg || selectDefaultModel(os.totalmem(), data.models || [])
     if (fromPkg) console.log(`[api] using agent-package model: ${currentModel}`)
     else if (currentModel) console.log(`[api] package model not installed; auto-selected: ${currentModel}`)
@@ -46,33 +46,32 @@ const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
 // window, which truncates large tool results (and the question) out of context.
 const ollamaModel = (name) => ollama(name, {
   simulateStreaming: true,
-  numCtx: (AGENT.model && AGENT.model.context_length) || undefined,
+  numCtx: AGENT?.model?.context_length || undefined,
 })
 
 // ── Agent Package (model + system prompt + tools + runtime) ───────────────────
 
-// Minimal last-resort fallback so the app still boots if the package is missing.
-// The real agent (prompt, tool contracts, runtime) is the package — this is only a
-// degraded safety net, not a second source of truth.
-const FALLBACK_AGENT = {
-  name: 'builtin-default',
-  model: {},
-  runtime: { max_steps: 10, max_tool_result_chars: 8000, temperature: 0 },
-  tools: [{ name: 'list_directory' }, { name: 'read_text_file' }, { name: 'search_content' }],
-  toolAllowlist: ['list_directory', 'read_text_file', 'search_content'],
-  system_prompt: `You are a document-grounded assistant. You MUST ONLY answer based on the documents in your library — NEVER from your own knowledge. Use search_content to find passages and read_text_file to confirm values before answering, and answer in the same language as the question.`,
-}
-
+// The agent package is the SINGLE source of truth (prompt, tool contracts, model,
+// runtime) — also loaded by afchat_lab. There is intentionally NO built-in fallback:
+// a degraded default silently answers with the wrong tool contracts (e.g. the model
+// guesses parameter names), which is worse than a clear, visible failure.
+//
+// If the package can't load we do NOT exit and do NOT fall back: we keep AGENT null,
+// log loudly, and make every request that needs it return an explicit 503. The HTTP
+// server still starts so the window opens and the user SEES the error instead of a
+// silent process death or wrong answers.
+let agentLoadError = null
 const AGENT = (() => {
-  // The shared agent package — the single source of truth, also loaded by afchat_lab.
   const file = process.env.AGENT_PACKAGE || path.join(__dirname, '../packages/gemma4-qa')
   try {
     const p = loadPackage(file)
     console.log(`[api] loaded agent package: ${p.name} (model=${p.model.id}, tools=${p.toolAllowlist.join(',')}, steps=${p.runtime.max_steps}, cap=${p.runtime.max_tool_result_chars})`)
     return p
   } catch (err) {
-    console.warn(`[api] no agent package (${err.message}); using built-in default`)
-    return FALLBACK_AGENT
+    agentLoadError = `Agent package failed to load from "${file}": ${err.message}`
+    console.error(`[api] FATAL: ${agentLoadError}`)
+    console.error('[api] The app cannot answer without an agent package. Ensure packages/** is bundled (electron-builder "files") or set AGENT_PACKAGE to a valid package.')
+    return null
   }
 })()
 
@@ -194,7 +193,7 @@ const TOOL_IMPLS = {
       const totalLength = content.length
       if (head) content = content.split('\n').slice(0, head).join('\n')
       else if (tail) content = content.split('\n').slice(-tail).join('\n')
-      const cap = (AGENT.runtime && AGENT.runtime.max_tool_result_chars) || 8000
+      const cap = AGENT?.runtime?.max_tool_result_chars || 8000
       if (content.length > cap) {
         return {
           filepath,
@@ -213,7 +212,7 @@ const TOOL_IMPLS = {
 // Build the AI SDK tool set from the PACKAGE's contracts (description + JSON schema),
 // binding each to its implementation by name. The descriptions/schemas come from the
 // package — this file holds none of them.
-const tools = Object.fromEntries(
+const tools = AGENT ? Object.fromEntries(
   AGENT.tools
     .filter(t => TOOL_IMPLS[t.name])
     .map(t => [t.name, {
@@ -221,8 +220,8 @@ const tools = Object.fromEntries(
       parameters: jsonSchema(t.parameters || { type: 'object', properties: {} }),
       execute: TOOL_IMPLS[t.name],
     }])
-)
-const missing = AGENT.toolAllowlist.filter(n => !TOOL_IMPLS[n])
+) : {}
+const missing = AGENT ? AGENT.toolAllowlist.filter(n => !TOOL_IMPLS[n]) : []
 if (missing.length) console.warn(`[api] agent package tools with no implementation: ${missing.join(', ')}`)
 
 // ── Auto Pre-Search ──────────────────────────────────────────────────────────
@@ -313,6 +312,11 @@ const server = http.createServer(async (req, res) => {
   console.log(`[api] ${req.method} ${req.url}`)
 
   if (req.method === 'POST' && req.url === '/chat') {
+    if (!AGENT) {
+      res.writeHead(503, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: agentLoadError || 'Agent package not loaded; the app cannot answer.' }))
+      return
+    }
     await ensureCurrentModel()
     if (!currentModel) {
       res.writeHead(503, { 'Content-Type': 'application/json' })
@@ -665,7 +669,7 @@ async function warmUpModel() {
       // chat would reload the model at a different context window.
       body: JSON.stringify({
         model, prompt: '', keep_alive: -1, stream: false,
-        options: { num_ctx: (AGENT.model && AGENT.model.context_length) || undefined },
+        options: { num_ctx: AGENT?.model?.context_length || undefined },
       }),
     })
     if (r.ok) console.log(`[api] warmed up model ${model} in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
