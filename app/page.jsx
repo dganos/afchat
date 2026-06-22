@@ -40,7 +40,7 @@ export default function ChatPage() {
     localStorage.setItem('docassist-settings', JSON.stringify(next))
   }
 
-  const { messages, input, handleInputChange, handleSubmit, status } = useChat({
+  const { messages, input, handleInputChange, handleSubmit, status, error } = useChat({
     api: 'http://localhost:3001/chat',
     body: { autoSearch: settings.autoSearch },
   })
@@ -59,12 +59,15 @@ export default function ChatPage() {
   // it's ready so we can show a loader and block input — the first question is then
   // fast (no cold model load mid-chat).
   const [modelReady, setModelReady] = useState(false)
+  const [modelError, setModelError] = useState(null)
   useEffect(() => {
     let stopped = false
     const poll = async () => {
       try {
         const r = await fetch('http://localhost:3001/ready')
-        if ((await r.json()).ready) { if (!stopped) setModelReady(true); return }
+        const data = await r.json()
+        if (data.ready) { if (!stopped) { setModelReady(true); setModelError(null) }; return }
+        if (data.error && !stopped) setModelError(data.error)  // surface warm-up failure (e.g. low memory)
       } catch { /* API not up yet */ }
       if (!stopped) setTimeout(poll, 800)
     }
@@ -125,9 +128,18 @@ export default function ChatPage() {
           {/* Warming up the model at startup — block with a loader until ready */}
           {!modelReady && (
             <div className="flex flex-col items-center justify-center h-[60vh] gap-4">
-              <HelicopterLoader className="h-16 w-16 text-muted-foreground" />
-              <p className="text-lg font-medium text-foreground">טוען את המודל…</p>
-              <p className="text-sm text-muted-foreground">רגע אחד — מחמם את המודל בזיכרון (קורה פעם אחת בהפעלה)</p>
+              {modelError ? (
+                <>
+                  <p className="text-lg font-medium text-destructive">טעינת המודל נכשלה</p>
+                  <p className="text-sm text-muted-foreground max-w-md text-center" dir="auto">{modelError}</p>
+                </>
+              ) : (
+                <>
+                  <HelicopterLoader className="h-16 w-16 text-muted-foreground" />
+                  <p className="text-lg font-medium text-foreground">טוען את המודל…</p>
+                  <p className="text-sm text-muted-foreground">רגע אחד — מחמם את המודל בזיכרון (קורה פעם אחת בהפעלה)</p>
+                </>
+              )}
             </div>
           )}
 
@@ -187,6 +199,13 @@ export default function ChatPage() {
               </MessageContent>
             </Message>
           ))}
+
+          {/* Chat error — show the real failure instead of silently returning nothing */}
+          {error && !isBusy && (
+            <div className="mx-auto my-4 max-w-xl rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive" dir="auto">
+              {error.message || 'אירעה שגיאה בעת יצירת התשובה.'}
+            </div>
+          )}
 
           {/* Activity indicator + live timer — shown while waiting or streaming */}
           {isBusy && (

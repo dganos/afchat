@@ -19,6 +19,23 @@ let currentModel = null
 // Flips true once the model is warmed up (loaded into memory) at startup, so the UI
 // can show a loading state and block input until the first question will be fast.
 let modelReady = false
+// Set to a human-readable reason when warm-up fails (e.g. out of memory) so the UI
+// can show the truth instead of a perpetual "loading" or a generic error.
+let modelError = null
+
+// If the model won't fit in free RAM, return a clear message (mirrors the
+// memory-aware error the /models/select endpoint already gives the UI).
+async function memoryHint(model) {
+  try {
+    const tags = await (await fetch('http://localhost:11434/api/tags')).json()
+    const m = (tags.models || []).find(x => x.name === model || x.model === model)
+    const free = availableMemory()
+    if (m && m.size && free && m.size > free) {
+      return `The "${model}" model needs ~${(m.size / 1e9).toFixed(1)} GB but only ~${(free / 1e9).toFixed(1)} GB RAM is free. Close other apps and try again.`
+    }
+  } catch { /* ignore — fall back to a generic message */ }
+  return null
+}
 
 async function ensureCurrentModel() {
   if (currentModel) return currentModel
@@ -287,7 +304,7 @@ const server = http.createServer(async (req, res) => {
   // model is loaded, so the first question is never slowed by a cold model load.
   if (req.method === 'GET' && req.url === '/ready') {
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ ready: modelReady, model: currentModel }))
+    res.end(JSON.stringify({ ready: modelReady, model: currentModel, error: modelError }))
     return
   }
 
@@ -361,7 +378,18 @@ const server = http.createServer(async (req, res) => {
 
       // pipeDataStreamToResponse sends the full AI SDK stream protocol
       // useChat on the frontend understands this natively — no extra config needed
-      result.pipeDataStreamToResponse(res)
+      result.pipeDataStreamToResponse(res, {
+        // Surface the real failure to the UI instead of the AI SDK's default
+        // "An error occurred." Ollama returns a 500 when it can't load the model,
+        // which on this air-gapped target almost always means not enough free RAM.
+        getErrorMessage: (error) => {
+          const msg = (error && error.message) ? error.message : String(error)
+          if (/internal server error|statuscode 500|\b500\b|memory|failed to load/i.test(msg)) {
+            return `The model could not generate a response — most likely not enough free RAM to load it. Close other apps and try again. (${msg})`
+          }
+          return msg
+        },
+      })
       res.on('finish', () => {
         console.log(`[api] response stream complete (${res.statusCode})`)
       })
@@ -652,10 +680,10 @@ async function warmUpModel() {
       try { up = (await fetch('http://localhost:11434/api/version')).ok } catch { /* not yet */ }
       if (!up) await sleep(1000)
     }
-    if (!up) { console.warn('[api] warm-up: Ollama did not come up'); return }
+    if (!up) { modelError = 'The Ollama service did not start.'; console.warn('[api] warm-up: Ollama did not come up'); return }
 
     const model = await ensureCurrentModel()
-    if (!model) { console.warn('[api] warm-up: no model available'); return }
+    if (!model) { modelError = 'No model is installed.'; console.warn('[api] warm-up: no model available'); return }
 
     // 2) One warm-up generate — empty prompt + keep_alive loads weights/KV cache and
     // returns only once the runner is ready. The await blocks for the whole cold load
@@ -672,13 +700,20 @@ async function warmUpModel() {
         options: { num_ctx: AGENT?.model?.context_length || undefined },
       }),
     })
-    if (r.ok) console.log(`[api] warmed up model ${model} in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
-    else console.warn(`[api] warm-up returned HTTP ${r.status}`)
+    if (r.ok) {
+      modelReady = true
+      modelError = null
+      console.log(`[api] warmed up model ${model} in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+    } else {
+      // Don't claim the model is ready when it isn't — report the real reason so
+      // the UI shows it instead of a perpetual loader followed by a silent failure.
+      const detail = (await r.text().catch(() => '')).slice(0, 300)
+      modelError = (await memoryHint(model)) || `The model failed to load (HTTP ${r.status}).${detail ? ' ' + detail : ''}`
+      console.warn(`[api] warm-up returned HTTP ${r.status}: ${modelError}`)
+    }
   } catch (e) {
-    console.warn(`[api] warm-up failed: ${e.message}; first request may be slow`)
-  } finally {
-    // Unblock the UI regardless — on failure the first chat just loads the model.
-    modelReady = true
+    modelError = `Warm-up failed: ${e.message}`
+    console.warn(`[api] ${modelError}`)
   }
 }
 
