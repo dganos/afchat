@@ -1,0 +1,192 @@
+{
+  "meta": {
+    "name": "ינשוף 124 — נתונים, מגבלות ונהלי חירום",
+    "version": 2,
+    "description": "20 questions over the two-document ינשוף corpus (green data/limits + red/yellow emergency procedures). Questions are phrased the way a human operator would ask — deliberately AVOIDING the documents' exact wording, headings, and English procedure names — so the agent must understand the topic and locate the answer by comprehension, not keyword matching. reference_answer + key_facts define ground truth for the LLM judge.",
+    "corpus_dir": "corpus_124",
+    "grading": "llm-judge (key_facts are required-fact anchors; verdict in {correct, partial, incorrect} -> score in {1.0, 0.5, 0.0})",
+    "answer_types": ["numeric", "term", "list", "date", "explanation", "multi"]
+  },
+  "questions": [
+    {
+      "id": "q01",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "מהאף ועד קצה הזנב, כמה ארוך המסוק?",
+      "reference_answer": "האורך הכולל הוא 19.76 מטר.",
+      "key_facts": ["19.76 m"]
+    },
+    {
+      "id": "q02",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "easy",
+      "answer_type": "term",
+      "question": "כמה אנשי צוות נדרשים לכל הפחות כדי להטיס את המסוק?",
+      "reference_answer": "שני טייסים (ואנשי צוות נוספים לפי סוג המשימה).",
+      "key_facts": ["שני טייסים"]
+    },
+    {
+      "id": "q03",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "מה המהירות הגבוהה ביותר שמותר לטוס בה קדימה?",
+      "reference_answer": "המהירות המרבית קדימה (VNE) היא 193 קשר.",
+      "key_facts": ["193K"]
+    },
+    {
+      "id": "q04",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "בטיסה מנועית רגילה ורציפה, באיזה טווח אחוזים אמור להישאר סיבוב הרוטור?",
+      "reference_answer": "טווח סל\"ד הרוטור הממושך עם כוח הוא 95-101%.",
+      "key_facts": ["95-101%"]
+    },
+    {
+      "id": "q05",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "אם נשאר רק מנוע אחד פועל, עד איזו מהירות מותר לטוס קדימה?",
+      "reference_answer": "המהירות המרבית קדימה על מנוע אחד היא 130 קשר.",
+      "key_facts": ["130K"]
+    },
+    {
+      "id": "q06",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "מה הלחץ הנמוך ביותר שצריך להיות אגור במערכת ההידראולית כדי שאפשר יהיה להתניע את יחידת הכוח העזר?",
+      "reference_answer": "הלחץ המינימלי ב-ACCUMULATOR להתנעת APU הוא 2800 PSI.",
+      "key_facts": ["2800 PSI"]
+    },
+    {
+      "id": "q07",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "מתחת לאיזו כמות דלק כבר אסור להמשיך לטוס?",
+      "reference_answer": "מינימום דלק הוא 350 lb.",
+      "key_facts": ["350 lb"]
+    },
+    {
+      "id": "q08",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "easy",
+      "answer_type": "term",
+      "question": "באיזה סוג דלק המסוק מתודלק בדרך כלל?",
+      "reference_answer": "סוג הדלק העיקרי הוא JP-8.",
+      "key_facts": ["JP-8"]
+    },
+    {
+      "id": "q09",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כשהמסוק עומד על מדרון בשיפוע של 15 מעלות, איזה לחץ שמן בתיבת ההילוכים הראשית עדיין נחשב תקין?",
+      "reference_answer": "בזווית שיפוע 15° לחץ שמן ממסר ראשי של 10-15 PSI הוא נורמלי.",
+      "key_facts": ["10-15 PSI"]
+    },
+    {
+      "id": "q10",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "hard",
+      "answer_type": "list",
+      "question": "באילו אחוזי סיבוב רוטור נדלקות שלוש נוריות האזהרה לסיבוב רוטור גבוה מדי?",
+      "reference_answer": "נורית 1 ב-127%, נורית 2 ב-137% ונורית 3 ב-142%.",
+      "key_facts": ["127%", "137%", "142%"]
+    },
+    {
+      "id": "q11",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "easy",
+      "answer_type": "term",
+      "question": "אם שני המנועים כבים תוך כדי טיסה, מה הפעולה שצריך לבצע?",
+      "reference_answer": "לבצע אוטורוטציה.",
+      "key_facts": ["אוטורוטציה"]
+    },
+    {
+      "id": "q12",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "medium",
+      "answer_type": "explanation",
+      "question": "כששני המנועים נדמים ומופיע חיווי שמנוע כבוי, מה חשוב לוודא לפני שמגיבים לחיווי?",
+      "reference_answer": "אין להגיב לשמע ולנורית ENG OUT לפני בדיקת Nr ו-TGT.",
+      "key_facts": ["Nr", "TGT"]
+    },
+    {
+      "id": "q13",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "כשמכבים את המסוק בחירום על הקרקע, מתחת לאיזה סיבוב רוטור מותר להפעיל את בלם הרוטור?",
+      "reference_answer": "יש למשוך בלם רוטור תחת NR 70%.",
+      "key_facts": ["70%"]
+    },
+    {
+      "id": "q14",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "medium",
+      "answer_type": "multi",
+      "question": "אם המוט להגברת גובה (קולקטיב) מתחיל לזוז מעלה או מטה מעצמו בלי שהטייס נוגע בו, באיזה כוח מדובר ומה הפעולה הראשונה?",
+      "reference_answer": "הקולקטיב זז בכוח של 150lb; הפעולה הראשונה היא BOOST - OFF.",
+      "key_facts": ["150lb", "BOOST", "OFF"]
+    },
+    {
+      "id": "q15",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "multi",
+      "question": "אם מקל הטיסה זז מעצמו במישור העלרוד (קדימה־אחורה) בלי פעולת הטייס, באיזה כוח מדובר ואילו מערכות ייצוב צריך לכבות?",
+      "reference_answer": "הסטיק זז בכוח של 20lb; יש להעביר את SAS1, SAS2 ו-FPS ל-OFF.",
+      "key_facts": ["20lb", "SAS1", "SAS2", "FPS"]
+    },
+    {
+      "id": "q16",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כשיש חשד לבעיה ברוטור הזנב, מעל איזו מהירות כדאי להישאר עד שמתאפשרת נחיתה בטוחה?",
+      "reference_answer": "יש לשמור על מהירות מעל 80K.",
+      "key_facts": ["80K"]
+    },
+    {
+      "id": "q17",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "medium",
+      "answer_type": "list",
+      "question": "כשפורצת אש באחד המנועים תוך כדי טיסה, מה רצף הפעולות המרכזי?",
+      "reference_answer": "היכנס לנתוני מנוע בודד, העבר את מצערת המנוע ל-OFF, משוך ידית T, בחר בקבוקים MAIN/RESERVE כנדרש, העבר FUEL BOOST של המנוע התקול ל-OFF ובצע נחיתה מיידית.",
+      "key_facts": ["מנוע בודד", "ידית T", "נחיתה מיידית"]
+    },
+    {
+      "id": "q18",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "אם מריחים דלק או רואים עשן בתא, לאיזו מהירות צריך להאט?",
+      "reference_answer": "יש להאט למהירות של 80 קשר או פחות.",
+      "key_facts": ["80"]
+    },
+    {
+      "id": "q19",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "medium",
+      "answer_type": "term",
+      "question": "אם המסוק נפגע מברק תוך כדי טיסה, מה הפעולה הראשונה?",
+      "reference_answer": "היכנס לנתוני מנוע בודד.",
+      "key_facts": ["מנוע בודד"]
+    },
+    {
+      "id": "q20",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "explanation",
+      "question": "מיד אחרי התנעת יחידת הכוח העזר מופיע לרגע חיווי אש — האם זה מעיד על אש אמיתית, וכמה זמן התופעה נמשכת?",
+      "reference_answer": "במהלך 4 שניות לאחר הנעת APU ייתכן ותופיע רגעית נורית FIRE והדלקת ידית T, ואין זה מעיד על אש ב-APU.",
+      "key_facts": ["4 שניות", "APU"]
+    }
+  ]
+}
