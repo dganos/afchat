@@ -674,6 +674,7 @@ server.listen(3001, () => {
 async function warmUpModel() {
   const sleep = (ms) => new Promise(res => setTimeout(res, ms))
   try {
+    if (!AGENT) { modelError = agentLoadError || 'Agent package not loaded.'; console.warn('[api] warm-up skipped: no agent package'); return }
     // 1) Wait (up to ~60s) for Ollama's HTTP API to come up — spawned in parallel.
     let up = false
     for (let i = 0; i < 60 && !up; i++) {
@@ -685,34 +686,51 @@ async function warmUpModel() {
     const model = await ensureCurrentModel()
     if (!model) { modelError = 'No model is installed.'; console.warn('[api] warm-up: no model available'); return }
 
-    // 2) One warm-up generate — empty prompt + keep_alive loads weights/KV cache and
-    // returns only once the runner is ready. The await blocks for the whole cold load
-    // (can be 30-60s on an 8 GB box), so the user's first real question is fast.
+    // 2) One warm-up generation through the SAME path as a real chat (system
+    // prompt + tool schemas) so Ollama doesn't just load the weights — it also
+    // PREFILLS and caches that large fixed prefix. With an empty-prompt warm-up the
+    // first real question still paid the full system-prompt prefill (~90s on CPU)
+    // and only later questions were fast (served from Ollama's prompt cache).
+    // Priming the real prefix here moves that cost into startup, behind the loader,
+    // so the FIRST answer is fast too. Same numCtx (via ollamaModel) as chat, so no
+    // model reload happens on the first real request.
     const t0 = Date.now()
-    const r = await fetch('http://localhost:11434/api/generate', {
+    // Tools in Ollama's format, matching what the chat path sends, so the prefilled
+    // system+tools prefix is the SAME token sequence the first real question uses
+    // and Ollama serves it from its prompt cache.
+    const ollamaTools = (AGENT.toolAllowlist || [])
+      .map(n => (AGENT.tools || []).find(t => t.name === n))
+      .filter(Boolean)
+      .map(t => ({ type: 'function', function: { name: t.name, description: t.description || '', parameters: t.parameters || { type: 'object', properties: {} } } }))
+    // Non-streaming /api/chat blocks until the model is loaded AND the prompt is
+    // prefilled, and returns a real HTTP status we can check (keep_alive -1 keeps
+    // it resident; same num_ctx as chat -> no reload on the first request).
+    const r = await fetch('http://localhost:11434/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // keep_alive MUST be the number -1 (the string "-1" is parsed as a duration
-      // and 400s). Load at the SAME num_ctx the chat requests use, or the first
-      // chat would reload the model at a different context window.
       body: JSON.stringify({
-        model, prompt: '', keep_alive: -1, stream: false,
+        model,
+        messages: [{ role: 'system', content: AGENT.system_prompt }, { role: 'user', content: 'hi' }],
+        tools: ollamaTools.length ? ollamaTools : undefined,
+        stream: false,
+        keep_alive: -1,
         options: { num_ctx: AGENT?.model?.context_length || undefined },
       }),
     })
     if (r.ok) {
       modelReady = true
       modelError = null
-      console.log(`[api] warmed up model ${model} in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+      console.log(`[api] warmed up model ${model} (weights + prompt prefix) in ${((Date.now() - t0) / 1000).toFixed(1)}s`)
     } else {
-      // Don't claim the model is ready when it isn't — report the real reason so
-      // the UI shows it instead of a perpetual loader followed by a silent failure.
       const detail = (await r.text().catch(() => '')).slice(0, 300)
       modelError = (await memoryHint(model)) || `The model failed to load (HTTP ${r.status}).${detail ? ' ' + detail : ''}`
       console.warn(`[api] warm-up returned HTTP ${r.status}: ${modelError}`)
     }
   } catch (e) {
-    modelError = `Warm-up failed: ${e.message}`
+    // Don't claim the model is ready when it isn't — report the real reason
+    // (memory hint when it won't fit) so the UI shows it instead of a perpetual
+    // loader followed by a silent failure.
+    modelError = (await memoryHint(currentModel)) || `Warm-up failed: ${e.message}`
     console.warn(`[api] ${modelError}`)
   }
 }
