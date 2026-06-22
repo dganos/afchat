@@ -54,10 +54,6 @@
         "to": "ollama"
       },
       {
-        "from": "resources/models",
-        "to": "models"
-      },
-      {
         "from": "resources/documents",
         "to": "documents"
       }
@@ -67,7 +63,19 @@
       "category": "Utility"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Aristo",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "uninstallDisplayName": "Aristo",
+      "artifactName": "Aristo-Setup-${version}.${ext}"
     },
     "mac": {
       "target": "dmg"

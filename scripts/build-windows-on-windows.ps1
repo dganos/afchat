@@ -46,6 +46,7 @@
 param(
   [switch]$Force,
   [switch]$RefreshOllama,
+  [switch]$Portable,   # build portable app+models zips instead of an NSIS installer
   [int]$SplitSizeMB = 1900,
   [string]$OllamaUrl = 'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip'
 )
@@ -259,10 +260,16 @@ try {
   npx next build
   if ($LASTEXITCODE -ne 0) { Die 'next build failed.' }
 
-  Info '[4/5] electron-builder --win --x64 --dir'
   Initialize-WinCodeSignCache   # avoid the symlink-privilege failure on locked-down Windows
   if (Test-Path $Unpacked) { Remove-Item $Unpacked -Recurse -Force }
-  npx electron-builder --win --x64 --dir
+  if ($Portable) {
+    Info '[4/5] electron-builder --win --x64 --dir (portable)'
+    npx electron-builder --win --x64 --dir
+  } else {
+    Info '[4/5] electron-builder --win --x64 (NSIS installer)'
+    Get-ChildItem $Dist -Filter 'Aristo-Setup-*.exe' -ErrorAction SilentlyContinue | Remove-Item -Force
+    npx electron-builder --win --x64
+  }
   if ($LASTEXITCODE -ne 0) { Die 'electron-builder failed.' }
 } finally { Pop-Location }
 
@@ -279,39 +286,54 @@ if (-not (Test-Path $asar)) { Die 'resources\app.asar missing from the bundle.' 
 Ok ("app.asar present: {0}" -f (Get-SizeStr $asar))
 
 # ── 4. Zip: app (no models) + models, split models for GitHub ─────────────────
-Info '[5/5] Creating zip(s)'
-$modelsPath = (Join-Path $Unpacked 'resources\models')
-
-Ok 'app zip (excluding models)...'
-New-StoredZip -OutFile $AppZip -SourceDir $Dist -ArcPrefix '' -ExcludeDirs @($modelsPath)
-Ok ("{0}  ({1})" -f (Split-Path $AppZip -Leaf), (Get-SizeStr $AppZip))
-
-Ok 'models zip...'
-# Prefix so it merges with the app zip on extract: win-unpacked\resources\models\...
-New-StoredZip -OutFile $ModelsZip -SourceDir $modelsPath -ArcPrefix 'win-unpacked/resources/models'
-Ok ("{0}  ({1})" -f (Split-Path $ModelsZip -Leaf), (Get-SizeStr $ModelsZip))
-
-$parts = @()
-if ($SplitSizeMB -gt 0 -and (Get-Item $ModelsZip).Length -gt ([int64]$SplitSizeMB * 1MB)) {
-  Ok "models zip exceeds ${SplitSizeMB} MB — splitting for GitHub Releases..."
+# ---- Package & split for GitHub's 2 GB/file limit ----
+if ($Portable) {
+  Info '[5/5] Creating portable zip(s)'
+  Ok 'app zip (no models)...'
+  New-StoredZip -OutFile $AppZip -SourceDir $Unpacked -ArcPrefix 'win-unpacked'
+  Ok ("{0}  ({1})" -f (Split-Path $AppZip -Leaf), (Get-SizeStr $AppZip))
+  Ok 'models zip...'
+  New-StoredZip -OutFile $ModelsZip -SourceDir $ModelsDir -ArcPrefix 'win-unpacked/resources/models'
+  Ok ("{0}  ({1})" -f (Split-Path $ModelsZip -Leaf), (Get-SizeStr $ModelsZip))
+  $parts = @()
+  if ($SplitSizeMB -gt 0 -and (Get-Item $ModelsZip).Length -gt ([int64]$SplitSizeMB * 1MB)) {
+    Ok ("splitting models zip into <{0} MB parts..." -f $SplitSizeMB)
+    Get-ChildItem -Path $Dist -Filter 'Aristo-Windows-models.zip.part*' -ErrorAction SilentlyContinue | Remove-Item -Force
+    $parts = Split-IntoParts -Path $ModelsZip -ChunkMB $SplitSizeMB
+    foreach ($p in $parts) { Ok ("  {0}  ({1})" -f (Split-Path $p -Leaf), (Get-SizeStr $p)) }
+  }
+  Write-Host ''
+  Write-Host 'Build complete (portable)' -ForegroundColor Green
+  Ok ("{0}  ({1})" -f $AppZip,    (Get-SizeStr $AppZip))
+  Ok ("{0}  ({1})" -f $ModelsZip, (Get-SizeStr $ModelsZip))
+  Write-Host ''
+  Write-Host 'On the target: extract the app zip, (reassemble &) extract the models zip into the SAME folder, then run win-unpacked\Aristo.exe' -ForegroundColor Cyan
+}
+else {
+  Info '[5/5] Building model parts for the installer'
+  $setup = Get-ChildItem $Dist -Filter 'Aristo-Setup-*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if (-not $setup) { Die 'NSIS installer (Aristo-Setup-*.exe) was not produced.' }
+  Ok ("installer: {0}  ({1})" -f $setup.Name, (Get-SizeStr $setup.FullName))
+  # Model store -> stored zip (entries: blobs/.., manifests/..), then split into the
+  # parts the installer assembles next to itself. Always split so part00 exists.
+  Ok 'model zip (store)...'
+  New-StoredZip -OutFile $ModelsZip -SourceDir $ModelsDir -ArcPrefix ''
+  $chunk = if ($SplitSizeMB -gt 0) { $SplitSizeMB } else { 1900 }
+  Ok ("splitting model zip into <{0} MB parts..." -f $chunk)
   Get-ChildItem -Path $Dist -Filter 'Aristo-Windows-models.zip.part*' -ErrorAction SilentlyContinue | Remove-Item -Force
-  $parts = Split-IntoParts -Path $ModelsZip -ChunkMB $SplitSizeMB
+  $parts = Split-IntoParts -Path $ModelsZip -ChunkMB $chunk
+  Remove-Item $ModelsZip -Force   # ship only the parts
   foreach ($p in $parts) { Ok ("  {0}  ({1})" -f (Split-Path $p -Leaf), (Get-SizeStr $p)) }
+  Write-Host ''
+  Write-Host 'Build complete (installer)' -ForegroundColor Green
+  Ok ("{0}  ({1})" -f $setup.Name, (Get-SizeStr $setup.FullName))
+  Ok ("model parts: {0}" -f $parts.Count)
+  Write-Host ''
+  Write-Host 'Release / install:' -ForegroundColor Cyan
+  Write-Host '  - Upload to the SAME GitHub release:'
+  Write-Host ("      {0}" -f $setup.Name)
+  Write-Host '      Aristo-Windows-models.zip.part00, .part01, ...'
+  Write-Host '  - The user downloads ALL of them into ONE folder and runs the installer.'
+  Write-Host '    It assembles the model parts and installs Aristo (model + app) with a'
+  Write-Host '    desktop + Start Menu shortcut and an uninstaller.'
 }
-
-# ── Done ──────────────────────────────────────────────────────────────────────
-Write-Host ''
-Write-Host 'Build complete' -ForegroundColor Green
-Ok ("{0}  ({1})" -f $AppZip,    (Get-SizeStr $AppZip))
-Ok ("{0}  ({1})" -f $ModelsZip, (Get-SizeStr $ModelsZip))
-Write-Host ''
-Write-Host 'On the target (air-gapped) Windows machine:' -ForegroundColor Cyan
-Write-Host '  1. Extract Aristo-Windows-app.zip into a folder.'
-if ($parts.Count -gt 0) {
-  Write-Host '  2. Reassemble the model zip from its parts, e.g. in cmd.exe:'
-  Write-Host '         copy /b Aristo-Windows-models.zip.part?? Aristo-Windows-models.zip'
-  Write-Host '     then extract Aristo-Windows-models.zip into the SAME folder.'
-} else {
-  Write-Host '  2. Extract Aristo-Windows-models.zip into the SAME folder.'
-}
-Write-Host '  3. Run win-unpacked\Aristo.exe'
