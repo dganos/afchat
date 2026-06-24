@@ -1,8 +1,29 @@
 'use client'
 
-import { X, Settings2 } from 'lucide-react'
+import { useState } from 'react'
+import { X, Settings2, Zap } from 'lucide-react'
+import { HelicopterLoader } from '@/components/helicopter-loader'
+
+const API = 'http://localhost:3001'
 
 export function SettingsPanel({ open, onClose, settings, onSettingsChange }) {
+  const [running, setRunning] = useState(false)
+  const [result, setResult] = useState(null)
+  const [err, setErr] = useState(null)
+
+  const runSpeedCheck = async () => {
+    setRunning(true); setErr(null); setResult(null)
+    try {
+      const r = await fetch(`${API}/speedtest`, { method: 'POST' })
+      const d = await r.json()
+      if (d.error) setErr(d.error)
+      else setResult(d)
+    } catch (e) {
+      setErr(e.message)
+    }
+    setRunning(false)
+  }
+
   if (!open) return null
 
   const toggle = (key) => {
@@ -54,6 +75,40 @@ export function SettingsPanel({ open, onClose, settings, onSettingsChange }) {
                 />
               </button>
             </label>
+          </div>
+
+          {/* Speed check section */}
+          <div className="px-4 py-3 border-b">
+            <h3 className="text-xs font-medium text-muted-foreground mb-2">Speed check</h3>
+            <p className="text-xs text-muted-foreground mb-3">
+              Measure this machine's throughput (tokens/sec) for the current model. Takes ~15–20s.
+            </p>
+            <button
+              onClick={runSpeedCheck}
+              disabled={running}
+              className="flex items-center justify-center gap-2 w-full px-3 py-2 text-sm font-medium rounded-md bg-primary text-on-accent hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {running ? <HelicopterLoader className="h-4 w-4" /> : <Zap className="h-4 w-4" />}
+              {running ? 'Running…' : 'Run speed check'}
+            </button>
+
+            {err && <p className="text-xs text-wrong-text mt-2">{err}</p>}
+
+            {result && !running && (
+              <div className="mt-3 rounded-md border border-border bg-surface-2 p-3 text-xs" dir="ltr">
+                <div className="flex items-center justify-between py-0.5">
+                  <span className="text-fg-muted">Generation</span>
+                  <span className="font-mono tabular-nums text-fg font-medium">{result.genTps} tok/s</span>
+                </div>
+                <div className="flex items-center justify-between py-0.5">
+                  <span className="text-fg-muted">Prompt (prefill)</span>
+                  <span className="font-mono tabular-nums text-fg">{result.prefillTps} tok/s</span>
+                </div>
+                <div className="mt-2 pt-2 border-t border-border text-[11px] text-fg-faint">
+                  {result.machine.cpu} · {result.machine.cores} cores · {result.machine.ramGB} GB · {result.model} (ctx {result.numCtx})
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

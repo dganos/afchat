@@ -440,6 +440,63 @@ async function autoSearch(userMessage) {
 
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 
+// Speed check: measure Aristo's throughput (generation + prefill tok/s) through
+// Ollama with the app's EXACT config (agent-package model + context + system
+// prompt + warm-up). Same logic as scripts/bench_aristo_tps.py, in-process so the
+// Settings panel can run it. Reads Ollama's native token counters (exact).
+async function runSpeedTest() {
+  const base = 'http://localhost:11434'
+  const model = currentModel
+  const numCtx = AGENT?.model?.context_length || 8192
+  const sys = AGENT?.system_prompt || ''
+  const temp = AGENT?.runtime?.temperature ?? 0
+  const chat = async (messages, numPredict, ctx = numCtx) => {
+    const r = await fetch(`${base}/api/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, stream: false, messages, options: { temperature: temp, num_ctx: ctx, num_predict: numPredict } }),
+    })
+    if (!r.ok) throw new Error(`Ollama /api/chat returned ${r.status}`)
+    return r.json()
+  }
+  const tps = (cnt, durNs) => (durNs ? +(cnt / (durNs / 1e9)).toFixed(1) : 0)
+
+  // warm-up (load weights + cache the system prefix), discarded
+  await chat([{ role: 'system', content: sys }, { role: 'user', content: 'hi' }], 8)
+
+  // generation throughput (prefix cached → isolates output speed)
+  const GEN = 'Explain in detail, step by step and across several paragraphs, how a helicopter main rotor produces lift, and how collective pitch, cyclic pitch, and the tail rotor each control the aircraft. Be thorough.'
+  let gTok = 0, gNs = 0; const gPer = []
+  for (let i = 0; i < 3; i++) {
+    const d = await chat([{ role: 'system', content: sys }, { role: 'user', content: GEN }], 160)
+    gTok += d.eval_count || 0; gNs += d.eval_duration || 0
+    gPer.push(tps(d.eval_count || 0, d.eval_duration || 0))
+  }
+
+  // prefill throughput (unique prompt each run so the cache can't inflate it)
+  const PREFILL_TOK = 2048
+  const words = 'rotor lift collective cyclic pitch torque tail autorotation airspeed altitude procedure limit emergency checklist engine hydraulic warning'.split(' ')
+  const filler = (salt) => {
+    let s = `ref${salt} `
+    for (let i = 0, n = Math.round(PREFILL_TOK / 0.75); i < n; i++) s += words[i % words.length] + ' '
+    return s
+  }
+  let pTok = 0, pNs = 0
+  for (let i = 0; i < 2; i++) {
+    const d = await chat([{ role: 'system', content: sys }, { role: 'user', content: filler(`${i}-${Date.now()}`) + '\n\nReply OK.' }], 1, Math.max(numCtx, PREFILL_TOK + 1024))
+    pTok += d.prompt_eval_count || 0; pNs += d.prompt_eval_duration || 0
+  }
+
+  const cpus = os.cpus() || []
+  return {
+    genTps: tps(gTok, gNs), genPerRun: gPer, prefillTps: tps(pTok, pNs),
+    model, numCtx,
+    machine: {
+      cpu: cpus[0]?.model || os.arch(), cores: cpus.length || 0,
+      ramGB: +(os.totalmem() / 1024 ** 3).toFixed(1), platform: os.platform(), arch: os.arch(),
+    },
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   // CORS headers — required for Electron renderer to call this
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -541,6 +598,24 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+
+  // Speed check — runs the throughput benchmark and returns gen/prefill tok/s.
+  if (req.method === 'POST' && req.url === '/speedtest') {
+    if (!AGENT || !currentModel) {
+      res.writeHead(503, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Model not ready.' }))
+      return
+    }
+    try {
+      const result = await runSpeedTest()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify(result))
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: e.message }))
+    }
+    return
+  }
 
   console.log(`[api] ${req.method} ${req.url}`)
 
