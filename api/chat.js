@@ -3,7 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { createOllama } = require('ollama-ai-provider')
-const { streamText, wrapLanguageModel, extractReasoningMiddleware, jsonSchema } = require('ai')
+const { streamText, generateText, wrapLanguageModel, extractReasoningMiddleware, jsonSchema } = require('ai')
 
 // Like the AI SDK's smoothStream, but paces BOTH the answer (`text-delta`) and
 // the reasoning (`reasoning`) word-by-word. smoothStream only smooths text, so
@@ -97,15 +97,69 @@ const DOCS_PATH = process.env.DOCS_PATH || path.join(__dirname, '../resources/do
 // extractReasoningMiddleware (below) then splits it back out into a proper
 // reasoning part that the UI renders. Defensive: any failure returns the
 // original response unchanged.
+// Best-effort repair of a malformed gemma tool call that Ollama's own parser
+// rejected and left as raw text in `content`, e.g.:
+//   call:search_content{context:25,path:<|"|>file.md<|"|>,pattern="## "}
+//   call:search_content{pattern:[<|"|>a<|"|>,<|"|>b<|"|>],path:[<|"|>c<|"|>}  (missing ])
+// Normalizes the gemma quirks (quote token, `=` separators, bare keys) and
+// balances brackets, then JSON.parses the args. Returns {name, arguments} or null.
+function repairGemmaToolCall(content) {
+  if (typeof content !== 'string') return null
+  const m = content.match(/call:\s*([a-zA-Z_]\w*)\s*\{/)
+  if (!m) return null
+  const name = m[1]
+  const start = m.index + m[0].length - 1            // index of the "{"
+  const lastBrace = content.lastIndexOf('}')
+  let s = lastBrace > start ? content.slice(start, lastBrace + 1) : content.slice(start)
+  s = s.replace(/<\|"\|>/g, '"').replace(/[“”]/g, '"')       // gemma quote token + smart quotes
+       .replace(/=/g, ':')                                    // key=value → key:value
+       .replace(/([{,\[]\s*)([a-zA-Z_]\w*)\s*:/g, '$1"$2":')  // quote bare keys
+  const count = (str, ch) => str.split(ch).length - 1
+  const arrDeficit = count(s, '[') - count(s, ']')           // insert missing ] before final }
+  if (arrDeficit > 0) {
+    const lb = s.lastIndexOf('}')
+    s = lb !== -1 ? s.slice(0, lb) + ']'.repeat(arrDeficit) + s.slice(lb) : s + ']'.repeat(arrDeficit)
+  }
+  s += '}'.repeat(Math.max(0, count(s, '{') - count(s, '}')))  // balance braces
+  try {
+    const args = JSON.parse(s)
+    if (args && typeof args === 'object' && !Array.isArray(args)) return { name, arguments: args }
+  } catch { /* unrepairable */ }
+  return null
+}
+
 const ollamaFetch = async (url, init) => {
   const res = await fetch(url, init)
   try {
     if (!String(url).includes('/api/chat')) return res
     if (!(res.headers.get('content-type') || '').includes('application/json')) return res
     const data = await res.clone().json()
-    const thinking = data?.message?.thinking
-    if (thinking && data.message) {
-      data.message.content = `<think>${thinking}</think>\n${data.message.content || ''}`
+    const msg = data?.message
+    if (!msg) return res
+    let modified = false
+
+    // 1) Salvage a malformed tool call Ollama's gemma parser left as raw text:
+    //    rebuild it as a structured tool_calls entry so the AI SDK runs it and
+    //    the agent loop continues, instead of the turn dead-ending with no answer.
+    if ((!msg.tool_calls || !msg.tool_calls.length) &&
+        typeof msg.content === 'string' && /call:\s*[a-zA-Z_]\w*\s*\{/.test(msg.content)) {
+      const repaired = repairGemmaToolCall(msg.content)
+      if (repaired && TOOL_IMPLS[repaired.name]) {
+        msg.tool_calls = [{ function: { name: repaired.name, arguments: repaired.arguments } }]
+        const ci = msg.content.search(/call:\s*[a-zA-Z_]\w*\s*\{/)
+        msg.content = ci > 0 ? msg.content.slice(0, ci).trim() : ''  // drop the leaked call text
+        modified = true
+        console.log(`[api] repaired malformed ${repaired.name} tool call: ${JSON.stringify(repaired.arguments)}`)
+      }
+    }
+
+    // 2) Fold Ollama's separate `thinking` field into a <think> block for the UI.
+    if (msg.thinking) {
+      msg.content = `<think>${msg.thinking}</think>\n${msg.content || ''}`
+      modified = true
+    }
+
+    if (modified) {
       const headers = new Headers(res.headers)
       headers.delete('content-length')  // body length changed
       return new Response(JSON.stringify(data), { status: res.status, statusText: res.statusText, headers })
@@ -426,6 +480,64 @@ const server = http.createServer(async (req, res) => {
     } catch {}
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ total, free, used: total - free, loaded }))
+    return
+  }
+
+  // Context-window size + the fixed base cost (system prompt + tool schemas).
+  // The client adds an estimate of the conversation tokens to draw the meter,
+  // so it updates live (and drops the moment the history is compacted).
+  if (req.method === 'GET' && req.url === '/context') {
+    const baseTokens = AGENT
+      ? Math.ceil((AGENT.system_prompt.length + JSON.stringify(AGENT.tools || []).length) / 3.5)
+      : 0
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ total: AGENT?.model?.context_length || 0, baseTokens }))
+    return
+  }
+
+  // Compact the conversation: summarize it into one concise message so the
+  // context window is freed (Claude-style /compact). The client replaces its
+  // history with the returned summary.
+  if (req.method === 'POST' && req.url === '/compact') {
+    if (!AGENT || !currentModel) {
+      res.writeHead(503, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Model not ready.' }))
+      return
+    }
+    try {
+      const body = await new Promise((resolve, reject) => {
+        let data = ''
+        req.on('data', (c) => { data += c })
+        req.on('end', () => { try { resolve(JSON.parse(data)) } catch (e) { reject(e) } })
+      })
+      // The context being compacted already fits the window (Ollama truncates
+      // anything past it), so size the summarizer's input to the FULL window
+      // minus room for the summary output — a normally-compacted conversation is
+      // then summarized losslessly. (~2.5 chars/token is a conservative Hebrew
+      // ratio so we never exceed the token budget.)
+      const SUMMARY_OUT = 2048
+      const ctxTokens = AGENT?.model?.context_length || 8192
+      const maxInChars = Math.max(4000, Math.round((ctxTokens - SUMMARY_OUT - 256) * 2.5))
+      const transcript = (body.messages || []).map((m) => {
+        const text = Array.isArray(m.parts)
+          ? m.parts.filter((p) => p.type === 'text').map((p) => p.text).join(' ')
+          : (m.content || '')
+        const calls = Array.isArray(m.parts)
+          ? m.parts.filter((p) => p.type === 'tool-invocation').map((p) => `[כלי: ${p.toolInvocation?.toolName}]`).join(' ')
+          : ''
+        return `${m.role === 'user' ? 'משתמש' : 'אריסטו'}: ${[text, calls].filter(Boolean).join(' ')}`.trim()
+      }).join('\n\n').slice(-maxInChars)  // safety net only; normally the whole convo fits
+      const { text } = await generateText({
+        model: ollamaModel(currentModel),
+        maxTokens: SUMMARY_OUT,
+        prompt: `סכם את השיחה הבאה בין משתמש לעוזר. שמור על כל העובדות, ההחלטות, שמות הקבצים והממצאים הדרושים כדי להמשיך מכאן. כתוב סיכום תמציתי אך שלם בעברית.\n\n${transcript}\n\nסיכום:`,
+      })
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ summary: (text || '').trim() }))
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: e.message }))
+    }
     return
   }
 

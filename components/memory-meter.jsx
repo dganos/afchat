@@ -56,7 +56,7 @@ export function MemoryMeter() {
         <div className="h-full bg-border-strong transition-[width] duration-500 ease-out" style={{ width: pct(otherUsed) }} />
         {/* Remaining track is free RAM */}
       </div>
-      <span className="tabular-nums whitespace-nowrap">
+      <span dir="ltr" className="tabular-nums whitespace-nowrap">
         <span className={freeColor}>{fmtGB(free)}</span>
         <span className="opacity-60"> / {fmtGB(total)} free</span>
       </span>

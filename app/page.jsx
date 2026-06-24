@@ -3,13 +3,13 @@
 import { useChat } from '@ai-sdk/react'
 import { Streamdown } from 'streamdown'
 import { code } from '@streamdown/code'
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, Fragment } from 'react'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
 import { Message, MessageContent } from '@/components/ai-elements/message'
 import { PromptInput, PromptInputTextarea, PromptInputSubmit } from '@/components/ai-elements/prompt-input'
 import { Tool } from '@/components/ai-elements/tool'
 import { Reasoning } from '@/components/ai-elements/reasoning'
-import { FolderOpen, Settings2 } from 'lucide-react'
+import { FolderOpen, Settings2, Archive } from 'lucide-react'
 import { HelicopterLoader } from '@/components/helicopter-loader'
 import { ResponseTimer } from '@/components/response-timer'
 import { LogsPanel } from '@/components/logs-panel'
@@ -18,6 +18,8 @@ import { ModelSelector } from '@/components/model-selector'
 import { MemoryMeter } from '@/components/memory-meter'
 import { SettingsPanel } from '@/components/settings-panel'
 import { ThemeToggle } from '@/components/theme-toggle'
+import { ContextMeter } from '@/components/context-meter'
+import { Logo } from '@/components/logo'
 
 const DEFAULT_SETTINGS = { autoSearch: false }
 
@@ -42,10 +44,54 @@ export default function ChatPage() {
     localStorage.setItem('docassist-settings', JSON.stringify(next))
   }
 
+  // Compaction state: the visible chat is NEVER touched — only the context we
+  // send to the model is compacted. { summary, count } = "the first `count`
+  // messages are represented by `summary`". Refs mirror it for the request hook.
+  const [compaction, setCompaction] = useState(null)
+  const compactionRef = useRef(null)
+  const autoSearchRef = useRef(settings.autoSearch)
+  useEffect(() => { autoSearchRef.current = settings.autoSearch }, [settings.autoSearch])
+
   const { messages, input, handleInputChange, handleSubmit, status, error } = useChat({
     api: 'http://localhost:3001/chat',
-    body: { autoSearch: settings.autoSearch },
+    // Send the COMPACTED context to the model (summary + messages since the last
+    // compaction). The UI keeps rendering the full `messages` untouched.
+    experimental_prepareRequestBody: ({ messages }) => {
+      const c = compactionRef.current
+      const sent = c
+        ? [{ role: 'assistant', content: c.summary, parts: [{ type: 'text', text: c.summary }] }, ...messages.slice(c.count)]
+        : messages
+      return { messages: sent, autoSearch: autoSearchRef.current }
+    },
   })
+
+  // What the model actually receives — also what the context meter measures and
+  // what re-compaction summarizes.
+  const effectiveContext = compaction
+    ? [{ role: 'assistant', parts: [{ type: 'text', text: compaction.summary }] }, ...messages.slice(compaction.count)]
+    : messages
+
+  // Claude-style compact: summarize the running context server-side, then route
+  // future turns through that summary. The visible conversation stays intact.
+  const [compacting, setCompacting] = useState(false)
+  const compactContext = async () => {
+    if (compacting || messages.length === 0) return
+    setCompacting(true)
+    try {
+      const r = await fetch('http://localhost:3001/compact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: effectiveContext }),
+      })
+      const data = await r.json()
+      if (data.summary) {
+        const next = { summary: data.summary, count: messages.length }
+        compactionRef.current = next
+        setCompaction(next)
+      }
+    } catch { /* leave context as-is on failure */ }
+    setCompacting(false)
+  }
 
   const [docsOpen, setDocsOpen] = useState(false)
   const isStreaming = status === 'streaming'
@@ -104,8 +150,9 @@ export default function ChatPage() {
     <div className="flex flex-col h-screen" dir="rtl">
       {/* Header */}
       <header className="flex items-center gap-2.5 px-4 py-2 border-b border-border bg-canvas">
-        <img src="./aristo-logo.png" alt="Aristo" className="h-20 w-auto select-none" draggable="false" />
+        <Logo className="text-2xl" />
         <div className="ms-auto flex items-center gap-1">
+          <ContextMeter messages={effectiveContext} onCompact={compactContext} compacting={compacting} />
           <MemoryMeter />
           <ModelSelector />
           <button
@@ -151,21 +198,25 @@ export default function ChatPage() {
           {/* Empty state — once the model is ready */}
           {modelReady && messages.length === 0 && (
             <div className="flex flex-col items-center justify-center h-[60vh] gap-4">
-              <img
-                src="./aristo-logo.png"
-                alt="Aristo"
-                className="h-80 w-auto select-none drop-shadow-[0_0_70px_rgba(59,130,246,0.45)]"
-                draggable="false"
-              />
-              <p className="text-lg font-medium text-foreground">שאל אותי כל דבר על המסמכים שלך</p>
+              <Logo className="text-6xl" glow />
+              <p className="text-lg font-medium text-foreground mt-2">שאל אותי כל דבר על המסמכים שלך</p>
               <p className="text-sm text-muted-foreground">אחפש ואקרא בהם כדי למצוא את התשובה</p>
             </div>
           )}
 
           {/* Message list — streamed answers announced politely to screen readers */}
           <div role="log" aria-live="polite" aria-relevant="additions text">
-          {messages.map((msg) => (
-            <Message key={msg.id} from={msg.role} isThinking={isBusy && msg.role === 'assistant' && msg === messages[messages.length - 1]}>
+          {messages.map((msg, idx) => (
+            <Fragment key={msg.id}>
+            {compaction && idx === compaction.count && (
+              <div className="flex items-center gap-2 my-4 text-[11px] text-fg-faint select-none">
+                <div className="h-px flex-1 bg-border" />
+                <Archive className="h-3 w-3" />
+                <span>ההקשר כווץ — ההודעות שמעל סוכמו עבור המודל</span>
+                <div className="h-px flex-1 bg-border" />
+              </div>
+            )}
+            <Message from={msg.role} isThinking={isBusy && msg.role === 'assistant' && msg === messages[messages.length - 1]}>
               {/* Timer at the TOP of the bubble: live while this answer streams,
                   frozen at its final value once done. */}
               {msg.role === 'assistant' && (() => {
@@ -243,7 +294,17 @@ export default function ChatPage() {
                 })}
               </MessageContent>
             </Message>
+            </Fragment>
           ))}
+          {/* Compaction happened after the last visible message (nothing new since) */}
+          {compaction && compaction.count >= messages.length && messages.length > 0 && (
+            <div className="flex items-center gap-2 my-4 text-[11px] text-fg-faint select-none">
+              <div className="h-px flex-1 bg-border" />
+              <Archive className="h-3 w-3" />
+              <span>ההקשר כווץ — ההודעות שמעל סוכמו עבור המודל</span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+          )}
           </div>
 
           {/* Chat error — show the real failure instead of silently returning nothing */}

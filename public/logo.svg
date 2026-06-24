@@ -1,0 +1,11 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="50" cy="50" r="48" fill="#2563EB"/>
+  <g fill="#ffffff" transform="rotate(15 50 50)">
+    <path d="M47.5 50 L48.6 20 Q49 14.5 50 14.5 Q51 14.5 51.4 20 L52.5 50 Z"/>
+    <path d="M47.5 50 L48.6 20 Q49 14.5 50 14.5 Q51 14.5 51.4 20 L52.5 50 Z" transform="rotate(90 50 50)"/>
+    <path d="M47.5 50 L48.6 20 Q49 14.5 50 14.5 Q51 14.5 51.4 20 L52.5 50 Z" transform="rotate(180 50 50)"/>
+    <path d="M47.5 50 L48.6 20 Q49 14.5 50 14.5 Q51 14.5 51.4 20 L52.5 50 Z" transform="rotate(270 50 50)"/>
+  </g>
+  <circle cx="50" cy="50" r="8" fill="#ffffff"/>
+  <circle cx="50" cy="50" r="3.2" fill="#2563EB"/>
+</svg>
