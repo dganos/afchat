@@ -60,11 +60,14 @@ export function PromptInputTextarea({ value, onChange, placeholder = 'Ask about 
   )
 }
 
-export function PromptInputSubmit({ isStreaming, disabled }) {
+export function PromptInputSubmit({ isStreaming, disabled, onStop }) {
   return (
     <button
-      type="submit"
-      disabled={disabled}
+      // While streaming this is a STOP button (always clickable); otherwise it
+      // submits and obeys `disabled` (no model / empty input).
+      type={isStreaming ? 'button' : 'submit'}
+      onClick={isStreaming ? onStop : undefined}
+      disabled={isStreaming ? false : disabled}
       aria-label={isStreaming ? 'עצור' : 'שלח'}
       className={cn(
         'flex h-10 w-10 shrink-0 items-center justify-center rounded-md',

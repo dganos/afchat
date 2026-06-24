@@ -52,7 +52,7 @@ export default function ChatPage() {
   const autoSearchRef = useRef(settings.autoSearch)
   useEffect(() => { autoSearchRef.current = settings.autoSearch }, [settings.autoSearch])
 
-  const { messages, input, handleInputChange, handleSubmit, status, error } = useChat({
+  const { messages, input, handleInputChange, handleSubmit, status, error, stop } = useChat({
     api: 'http://localhost:3001/chat',
     // Send the COMPACTED context to the model (summary + messages since the last
     // compaction). The UI keeps rendering the full `messages` untouched.
@@ -149,7 +149,7 @@ export default function ChatPage() {
   return (
     <div className="flex flex-col h-screen" dir="rtl">
       {/* Header */}
-      <header className="flex items-center gap-2.5 px-4 py-2 border-b border-border bg-canvas">
+      <header dir="ltr" className="flex items-center gap-2.5 px-4 py-2 border-b border-border bg-canvas">
         <Logo className="text-2xl" />
         <div className="ms-auto flex items-center gap-1">
           <ContextMeter messages={effectiveContext} onCompact={compactContext} compacting={compacting} />
@@ -341,7 +341,8 @@ export default function ChatPage() {
         />
         <PromptInputSubmit
           isStreaming={isBusy}
-          disabled={isBusy || !modelReady || !input.trim()}
+          disabled={!modelReady || !input.trim()}
+          onStop={stop}
         />
       </PromptInput>
 
