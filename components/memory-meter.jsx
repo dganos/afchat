@@ -41,7 +41,7 @@ export function MemoryMeter() {
 
   // Warn when free RAM gets tight — the zone where model loads start to OOM.
   const lowFree = free < total * 0.2
-  const freeColor = lowFree ? 'text-amber-600' : 'text-green-600'
+  const freeColor = lowFree ? 'text-review-text' : 'text-correct-text'
 
   return (
     <div
@@ -53,7 +53,7 @@ export function MemoryMeter() {
         {/* Loaded model weights */}
         <div className="h-full bg-primary transition-[width] duration-500 ease-out" style={{ width: pct(loaded) }} />
         {/* Everything else in use (OS, Electron, other apps) */}
-        <div className="h-full bg-muted-foreground/40 transition-[width] duration-500 ease-out" style={{ width: pct(otherUsed) }} />
+        <div className="h-full bg-border-strong transition-[width] duration-500 ease-out" style={{ width: pct(otherUsed) }} />
         {/* Remaining track is free RAM */}
       </div>
       <span className="tabular-nums whitespace-nowrap">

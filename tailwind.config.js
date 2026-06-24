@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 module.exports = {
+  darkMode: ['selector', '[data-theme="dark"]'],
   content: [
     './app/**/*.{js,jsx}',
     './components/**/*.{js,jsx}',
@@ -7,41 +8,90 @@ module.exports = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['var(--font-sans)'],
+        mono: ['var(--font-mono)'],
+      },
       colors: {
-        border: 'hsl(var(--border))',
-        input: 'hsl(var(--input))',
-        ring: 'hsl(var(--ring))',
-        background: 'hsl(var(--background))',
-        foreground: 'hsl(var(--foreground))',
+        /* ── design-system tokens ── */
+        canvas: 'var(--canvas)',
+        surface: {
+          DEFAULT: 'var(--surface)',
+          2: 'var(--surface-2)',
+        },
+        border: {
+          DEFAULT: 'var(--border)',
+          strong: 'var(--border-strong)',
+        },
+        fg: {
+          DEFAULT: 'var(--text)',
+          muted: 'var(--text-muted)',
+          faint: 'var(--text-faint)',
+        },
         primary: {
-          DEFAULT: 'hsl(var(--primary))',
-          foreground: 'hsl(var(--primary-foreground))',
+          DEFAULT: 'var(--accent)',
+          hover: 'var(--accent-hover)',
+          active: 'var(--accent-active)',
+          soft: 'var(--accent-soft)',
+          foreground: 'var(--on-accent)',
+        },
+        'on-accent': 'var(--on-accent)',
+        link: 'var(--link)',
+        'user-bubble': {
+          DEFAULT: 'var(--user-bubble-bg)',
+          text: 'var(--user-bubble-text)',
+        },
+        'assistant-bubble': {
+          DEFAULT: 'var(--assistant-bubble-bg)',
+          text: 'var(--assistant-bubble-text)',
+        },
+        correct: {
+          DEFAULT: 'var(--correct-bg)',
+          text: 'var(--correct-text)',
+          border: 'var(--correct-border)',
+        },
+        review: {
+          DEFAULT: 'var(--review-bg)',
+          text: 'var(--review-text)',
+          border: 'var(--review-border)',
+        },
+        wrong: {
+          DEFAULT: 'var(--wrong-bg)',
+          text: 'var(--wrong-text)',
+          border: 'var(--wrong-border)',
+        },
+
+        /* ── back-compat aliases → mapped onto the new tokens so existing
+              utility classes keep resolving to design tokens ── */
+        background: 'var(--canvas)',
+        foreground: 'var(--text)',
+        card: {
+          DEFAULT: 'var(--surface)',
+          foreground: 'var(--text)',
         },
         secondary: {
-          DEFAULT: 'hsl(var(--secondary))',
-          foreground: 'hsl(var(--secondary-foreground))',
+          DEFAULT: 'var(--surface-2)',
+          foreground: 'var(--text)',
         },
         muted: {
-          DEFAULT: 'hsl(var(--muted))',
-          foreground: 'hsl(var(--muted-foreground))',
+          DEFAULT: 'var(--surface-2)',
+          foreground: 'var(--text-muted)',
         },
         accent: {
-          DEFAULT: 'hsl(var(--accent))',
-          foreground: 'hsl(var(--accent-foreground))',
+          DEFAULT: 'var(--surface-2)',
+          foreground: 'var(--text)',
         },
         destructive: {
-          DEFAULT: 'hsl(var(--destructive))',
-          foreground: 'hsl(var(--destructive-foreground))',
+          DEFAULT: 'var(--wrong-text)',
+          foreground: 'var(--on-accent)',
         },
-        card: {
-          DEFAULT: 'hsl(var(--card))',
-          foreground: 'hsl(var(--card-foreground))',
-        },
+        input: 'var(--border)',
+        ring: 'var(--focus-ring)',
       },
       borderRadius: {
-        lg: 'var(--radius)',
-        md: 'calc(var(--radius) - 2px)',
-        sm: 'calc(var(--radius) - 4px)',
+        lg: 'var(--r-lg)',
+        md: 'var(--r-md)',
+        sm: 'var(--r-sm)',
       },
     },
   },

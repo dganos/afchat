@@ -80,8 +80,8 @@ export function DocumentsPanel({ open, onClose }) {
         {/* Header */}
         <div className="flex items-center gap-2 px-4 py-3 border-b">
           <FolderOpen className="h-4 w-4 text-primary" />
-          <span className="font-semibold text-sm">Documents</span>
-          <button onClick={onClose} className="ml-auto p-1 rounded hover:bg-muted">
+          <span className="font-medium text-sm">Documents</span>
+          <button onClick={onClose} aria-label="סגור" className="ml-auto p-1 rounded hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -99,7 +99,7 @@ export function DocumentsPanel({ open, onClose }) {
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={uploading}
-            className="flex items-center justify-center gap-2 w-full px-3 py-2 text-sm font-medium rounded-md border border-dashed border-muted-foreground/30 hover:bg-muted/50 transition-colors disabled:opacity-50"
+            className="flex items-center justify-center gap-2 w-full px-3 py-2 text-sm font-medium rounded-md border border-dashed border-border-strong hover:bg-surface-2 transition-colors disabled:opacity-50"
           >
             <Upload className="h-4 w-4" />
             {uploading ? 'Uploading...' : 'Upload Documents'}
@@ -118,7 +118,7 @@ export function DocumentsPanel({ open, onClose }) {
                 <li
                   key={file.name}
                   onClick={() => setViewingFile(file.name)}
-                  className="flex items-center gap-2 px-4 py-2 hover:bg-muted/30 group cursor-pointer select-none"
+                  className="flex items-center gap-2 px-4 py-2 hover:bg-surface-2 group cursor-pointer select-none"
                 >
                   <File className="h-4 w-4 text-muted-foreground shrink-0" />
                   <div className="flex-1 min-w-0">
@@ -127,7 +127,8 @@ export function DocumentsPanel({ open, onClose }) {
                   </div>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleDelete(file.name) }}
-                    className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive transition-all"
+                    aria-label={`מחק ${file.name}`}
+                    className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-wrong hover:text-wrong-text transition-all"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>

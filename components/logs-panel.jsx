@@ -33,7 +33,7 @@ export function LogsPanel() {
       {/* Toggle bar */}
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 w-full px-4 py-1.5 text-xs text-muted-foreground hover:bg-muted/50 transition-colors"
+        className="flex items-center gap-2 w-full px-4 py-1.5 text-xs text-muted-foreground hover:bg-surface-2 transition-colors"
       >
         <Terminal className="h-3.5 w-3.5" />
         <span className="font-medium">Logs</span>
@@ -65,13 +65,13 @@ export function LogsPanel() {
           {/* Log output */}
           <div
             ref={scrollRef}
-            className="h-[calc(100%-29px)] overflow-y-auto font-mono text-[11px] leading-relaxed p-2 bg-black/5 dark:bg-white/5"
+            className="h-[calc(100%-29px)] overflow-y-auto font-mono text-[11px] leading-relaxed p-2 bg-surface-2"
           >
             {activeLogs.length === 0 ? (
               <p className="text-muted-foreground text-center py-4">No logs yet</p>
             ) : (
               activeLogs.map((log, i) => (
-                <div key={i} className="flex gap-2 hover:bg-muted/30">
+                <div key={i} className="flex gap-2 hover:bg-surface-2">
                   <span className="text-muted-foreground shrink-0">{log.time}</span>
                   <span className="whitespace-pre-wrap break-all">{log.text}</span>
                 </div>

@@ -71,8 +71,10 @@ export function ConversationScrollButton({ className }) {
   return (
     <button
       onClick={scrollToBottom}
+      aria-label="גלול לתחתית"
       className={cn(
-        'absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-background border shadow-md p-2 transition-opacity hover:bg-accent',
+        'absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-surface text-fg border border-border shadow-md p-2 transition-colors hover:bg-surface-2',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         className
       )}
     >

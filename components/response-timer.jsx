@@ -4,19 +4,21 @@ import { useState, useRef, useEffect } from 'react'
 
 // Live elapsed-time readout shown while a response is generating. Counts up from
 // when `running` flips true (resetting each time), and disappears when it stops.
-export function ResponseTimer({ running, className = '' }) {
+export function ResponseTimer({ running, startTime, className = '' }) {
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(null)
 
   useEffect(() => {
     if (!running) return
-    startRef.current = Date.now()
-    setElapsed(0)
+    // Count from the shared startTime if provided, so the timer stays continuous
+    // when it moves from the waiting row into the message bubble.
+    startRef.current = startTime ?? Date.now()
+    setElapsed((Date.now() - startRef.current) / 1000)
     const id = setInterval(() => {
       setElapsed((Date.now() - startRef.current) / 1000)
     }, 100)
     return () => clearInterval(id)
-  }, [running])
+  }, [running, startTime])
 
   if (!running) return null
   return (

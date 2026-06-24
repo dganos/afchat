@@ -34,7 +34,7 @@ export function DocumentViewer({ filename, onClose }) {
         <div className="flex items-center gap-2 px-4 py-3 border-b shrink-0">
           <FileText className="h-4 w-4 text-primary" />
           <span className="font-medium text-sm truncate">{filename}</span>
-          <button onClick={onClose} className="ml-auto p-1 rounded hover:bg-muted">
+          <button onClick={onClose} aria-label="סגור" className="ml-auto p-1 rounded hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -51,7 +51,7 @@ export function DocumentViewer({ filename, onClose }) {
               <p>Error: {error}</p>
             </div>
           ) : (
-            <pre className="whitespace-pre-wrap text-sm leading-relaxed font-mono break-words">
+            <pre dir="auto" className="whitespace-pre-wrap text-sm leading-relaxed font-mono break-words">
               {content}
             </pre>
           )}

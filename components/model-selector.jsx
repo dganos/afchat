@@ -124,7 +124,7 @@ export function ModelSelector({ onModelChange }) {
         <div className="absolute top-full right-0 mt-1 w-80 bg-background border rounded-lg shadow-xl z-50 overflow-hidden">
           {/* Memory info */}
           {memory && (
-            <div className="px-3 py-2 bg-muted/30 border-b text-[11px] text-muted-foreground flex gap-3">
+            <div className="px-3 py-2 bg-surface-2 border-b text-[11px] text-muted-foreground flex gap-3">
               <span>Total: {formatBytes(memory.total)}</span>
               <span>Free: {formatBytes(memory.free)}</span>
             </div>
@@ -132,7 +132,7 @@ export function ModelSelector({ onModelChange }) {
 
           {/* Load progress */}
           {switching && (
-            <div className="px-3 py-2.5 border-b bg-muted/20">
+            <div className="px-3 py-2.5 border-b bg-surface-2">
               <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-1.5">
                 <span className="truncate pr-2">
                   Loading <span className="text-foreground font-medium">{switching}</span>…
@@ -163,7 +163,7 @@ export function ModelSelector({ onModelChange }) {
                   key={m.name}
                   onClick={() => selectModel(m.name)}
                   disabled={!!switching || !m.fitsInRAM}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {/* Active indicator */}
                   <div className="w-4 shrink-0">
@@ -185,9 +185,9 @@ export function ModelSelector({ onModelChange }) {
                   {/* RAM fit indicator */}
                   <div className="shrink-0">
                     {m.fitsInRAM ? (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-600">fits</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-correct text-correct-text">fits</span>
                     ) : (
-                      <span className="flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-600">
+                      <span className="flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-review text-review-text">
                         <AlertTriangle className="h-2.5 w-2.5" />
                         low RAM
                       </span>
@@ -200,8 +200,8 @@ export function ModelSelector({ onModelChange }) {
 
           {/* Error */}
           {error && (
-            <div className="px-3 py-2 border-t bg-red-500/5">
-              <p className="text-xs text-red-700">
+            <div className="px-3 py-2 border-t bg-wrong">
+              <p className="text-xs text-wrong-text">
                 {error.modelSize && error.freeRAM
                   ? `Model needs ${formatBytes(error.modelSize)} but only ${formatBytes(error.freeRAM)} free.`
                   : error.message}

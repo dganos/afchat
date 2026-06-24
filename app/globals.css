@@ -2,37 +2,189 @@
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    /* Dark navy theme */
-    --background: 222 30% 8%;
-    --foreground: 210 25% 88%;
-    --card: 222 28% 11%;
-    --card-foreground: 210 25% 88%;
-    --primary: 217 89% 48%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 222 25% 15%;
-    --secondary-foreground: 210 20% 82%;
-    --muted: 222 22% 14%;
-    --muted-foreground: 215 18% 50%;
-    --accent: 222 25% 18%;
-    --accent-foreground: 210 25% 88%;
-    --destructive: 0 70% 50%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 222 22% 18%;
-    --input: 222 22% 20%;
-    --ring: 217 89% 48%;
-    --radius: 0.75rem;
-  }
+/* ────────────────────────────────────────────────────────────────────────
+   Design tokens — single source of truth for color/radius/type.
+   Authored in sRGB. Components reference these variables only (via Tailwind
+   color names mapped in tailwind.config.js); never hardcode a hex.
+   ──────────────────────────────────────────────────────────────────────── */
+
+:root,
+[data-theme='light'] {
+  /* surfaces */
+  --canvas:                #F6F7F9;
+  --surface:               #FFFFFF;
+  --surface-2:             #EEF0F3;
+  --border:                #E3E6EB;
+  --border-strong:         #CBD0D8;
+
+  /* text */
+  --text:                  #1B1F26;
+  --text-muted:            #5C6470;
+  --text-faint:            #8A919C;
+
+  /* accent */
+  --accent:                #2563EB;
+  --accent-hover:          #1D4ED8;
+  --accent-active:         #1E40AF;
+  --accent-soft:           #E7EFFD;
+  --on-accent:             #FFFFFF;
+  --focus-ring:            rgba(37, 99, 235, 0.45);
+  --link:                  #2563EB;
+
+  /* chat bubbles */
+  --user-bubble-bg:        #E7EFFD;
+  --user-bubble-text:      #0C447C;
+  --assistant-bubble-bg:   #FFFFFF;
+  --assistant-bubble-text: #1B1F26;
+
+  /* QA verdict — verified */
+  --correct-bg:            #E6F4EA;
+  --correct-text:          #15803D;
+  --correct-border:        #BBE3C7;
+  /* QA verdict — needs review */
+  --review-bg:             #FCEFDC;
+  --review-text:           #B45309;
+  --review-border:         #F5D9A8;
+  /* QA verdict — wrong / unverified */
+  --wrong-bg:              #FBE9E9;
+  --wrong-text:            #B91C1C;
+  --wrong-border:          #F3C4C4;
+
+  /* radius */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  /* native font stacks — type looks native on each OS */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Segoe UI Mono', Menlo, Consolas, monospace;
+}
+
+[data-theme='dark'] {
+  --canvas:                #0F1218;
+  --surface:               #1A1E27;
+  --surface-2:             #232834;
+  --border:                #2A303B;
+  --border-strong:         #3A4150;
+
+  --text:                  #ECEEF1;
+  --text-muted:            #9AA2AE;
+  --text-faint:            #6B7280;
+
+  --accent:                #5B8DEF;
+  --accent-hover:          #7AA4F2;
+  --accent-active:         #4F7FE0;
+  --accent-soft:           #1C2A45;
+  --on-accent:             #0F1218;
+  --focus-ring:            rgba(91, 141, 239, 0.50);
+  --link:                  #7AA4F2;
+
+  --user-bubble-bg:        #243043;
+  --user-bubble-text:      #BBD3F7;
+  --assistant-bubble-bg:   #1A1E27;
+  --assistant-bubble-text: #ECEEF1;
+
+  --correct-bg:            #16331E;
+  --correct-text:          #5BE08A;
+  --correct-border:        #1F4A2C;
+  --review-bg:             #33270F;
+  --review-text:           #E3A53C;
+  --review-border:         #4A3A16;
+  --wrong-bg:              #331A1A;
+  --wrong-text:            #F26D6D;
+  --wrong-border:          #4A2424;
+}
+
+/* Optional wide-gamut (P3) enhancement — sRGB hex above stays the fallback.
+   Never define a color only in P3. */
+@media (color-gamut: p3) {
+  :root,
+  [data-theme='light'] { --accent: color(display-p3 0.145 0.388 0.922); }
+  [data-theme='dark']  { --accent: color(display-p3 0.357 0.553 0.937); }
 }
 
 @layer base {
   * {
     @apply border-border;
   }
-  body {
-    @apply bg-background text-foreground;
+
+  html {
+    color-scheme: light dark;
   }
+
+  body {
+    background-color: var(--canvas);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    /* smooth theme switch — disabled under reduced-motion below */
+    transition: background-color 120ms ease, color 120ms ease;
+  }
+
+  /* Custom scrollbars — native chrome differs (overlay on macOS, persistent
+     gutter on Windows); normalize from tokens. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--border-strong);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--text-faint);
+  }
+
+  /* Visible focus for keyboard users only. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+/* Respect reduced-motion: kill non-essential animation/transition. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+   Bidi (mixed Hebrew + English). Markdown answers routinely mix Hebrew prose
+   with English file names, code, and numbers. `unicode-bidi: plaintext` makes
+   each block pick its base direction from its first strong character (the CSS
+   equivalent of per-paragraph dir="auto"), so a line that starts in English
+   reads L→R while a Hebrew line reads R→L — no reordering or flipped
+   punctuation. Code/pre is pinned LTR; inline code is isolated so an English
+   token can't reorder the Hebrew around it.
+   ──────────────────────────────────────────────────────────────────────── */
+.chat-prose :is(p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th, dd, dt) {
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+.chat-prose :is(pre) {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: isolate;
+}
+.chat-prose :is(code, kbd, samp) {
+  unicode-bidi: isolate;
 }
 
 /* Helicopter propeller spin */
@@ -41,6 +193,6 @@
   to { transform: rotate(360deg); }
 }
 .animate-propeller {
-  animation: propeller-spin 0.3s linear infinite;
+  animation: propeller-spin 0.6s linear infinite;
   transform-origin: center;
 }

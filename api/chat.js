@@ -3,7 +3,43 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { createOllama } = require('ollama-ai-provider')
-const { streamText, jsonSchema } = require('ai')
+const { streamText, wrapLanguageModel, extractReasoningMiddleware, jsonSchema } = require('ai')
+
+// Like the AI SDK's smoothStream, but paces BOTH the answer (`text-delta`) and
+// the reasoning (`reasoning`) word-by-word. smoothStream only smooths text, so
+// thinking would otherwise arrive in one burst (the provider runs non-streaming
+// under simulateStreaming, so everything lands at once). Buffers per chunk type
+// and flushes when the type switches (reasoning → answer).
+function smoothBoth({ delayInMs = 18 } = {}) {
+  const WORD = /\S+\s+/m
+  const detect = (buf) => { const m = WORD.exec(buf); return m ? buf.slice(0, m.index) + m[0] : null }
+  return () => {
+    let buffer = ''
+    let type = null
+    const wait = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve())
+    return new TransformStream({
+      async transform(chunk, controller) {
+        if (chunk.type !== 'text-delta' && chunk.type !== 'reasoning') {
+          if (buffer) { controller.enqueue({ type, textDelta: buffer }); buffer = '' }
+          controller.enqueue(chunk)
+          return
+        }
+        if (type && chunk.type !== type && buffer) { controller.enqueue({ type, textDelta: buffer }); buffer = '' }
+        type = chunk.type
+        buffer += chunk.textDelta
+        let match
+        while ((match = detect(buffer)) != null) {
+          controller.enqueue({ type, textDelta: match })
+          buffer = buffer.slice(match.length)
+          await wait(delayInMs)
+        }
+      },
+      flush(controller) {
+        if (buffer) controller.enqueue({ type, textDelta: buffer })
+      },
+    })
+  }
+}
 const mammoth = require('mammoth')
 const { PDFParse } = require('pdf-parse')
 
@@ -53,7 +89,31 @@ async function ensureCurrentModel() {
   return currentModel
 }
 const DOCS_PATH = process.env.DOCS_PATH || path.join(__dirname, '../resources/documents')
-const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
+// gemma-4-e4b (and other Ollama thinking models) return their reasoning in a
+// SEPARATE `message.thinking` field — there are no <think> tags in the content,
+// and ollama-ai-provider v1 drops that field on the floor. simulateStreaming
+// uses the non-streaming /api/chat (a single JSON body), so we can intercept the
+// response here and fold `thinking` back into the content as a <think> block.
+// extractReasoningMiddleware (below) then splits it back out into a proper
+// reasoning part that the UI renders. Defensive: any failure returns the
+// original response unchanged.
+const ollamaFetch = async (url, init) => {
+  const res = await fetch(url, init)
+  try {
+    if (!String(url).includes('/api/chat')) return res
+    if (!(res.headers.get('content-type') || '').includes('application/json')) return res
+    const data = await res.clone().json()
+    const thinking = data?.message?.thinking
+    if (thinking && data.message) {
+      data.message.content = `<think>${thinking}</think>\n${data.message.content || ''}`
+      const headers = new Headers(res.headers)
+      headers.delete('content-length')  // body length changed
+      return new Response(JSON.stringify(data), { status: res.status, statusText: res.statusText, headers })
+    }
+  } catch { /* fall through to the unmodified response */ }
+  return res
+}
+const ollama = createOllama({ baseURL: 'http://localhost:11434/api', fetch: ollamaFetch })
 // ollama-ai-provider v1.2.0 streaming doesn't parse tool_calls from Ollama's
 // response (only tries to infer them from text content). With thinking models
 // like qwen3 the tool calls come in a structured field that the stream parser
@@ -61,9 +121,36 @@ const ollama = createOllama({ baseURL: 'http://localhost:11434/api' })
 // tool_calls correctly) and wraps the result in a stream for the AI SDK.
 // numCtx comes from the agent package: Ollama otherwise defaults to a 4096-token
 // window, which truncates large tool results (and the question) out of context.
-const ollamaModel = (name) => ollama(name, {
-  simulateStreaming: true,
-  numCtx: AGENT?.model?.context_length || undefined,
+// ollama-ai-provider v1.2.0 has no reasoning support, so a thinking model's
+// reasoning arrives inline as <think>…</think> inside the text. Wrap the model
+// with extractReasoningMiddleware to split that out into proper `reasoning`
+// parts (which the UI renders in a collapsible "thinking" panel) and keep the
+// answer text clean.
+// ollama-ai-provider v1 can't serialize a `reasoning` content part back into
+// Ollama format — convertToOllamaChatMessages throws "Unsupported part". That
+// breaks the multi-step tool loop AND every follow-up turn once reasoning exists
+// in the history. Reasoning is display-only (the model doesn't need to re-read
+// its own prior thinking), so strip reasoning parts from the OUTGOING prompt on
+// every provider call.
+const stripReasoningMiddleware = {
+  transformParams: async ({ params }) => ({
+    ...params,
+    prompt: (params.prompt || []).map((m) =>
+      Array.isArray(m.content)
+        ? { ...m, content: m.content.filter((p) => p.type !== 'reasoning') }
+        : m
+    ),
+  }),
+}
+
+const ollamaModel = (name) => wrapLanguageModel({
+  model: ollama(name, {
+    simulateStreaming: true,
+    numCtx: AGENT?.model?.context_length || undefined,
+  }),
+  // extractReasoningMiddleware: split <think> out of the OUTPUT into reasoning parts.
+  // stripReasoningMiddleware: remove reasoning parts from the INPUT prompt.
+  middleware: [extractReasoningMiddleware({ tagName: 'think' }), stripReasoningMiddleware],
 })
 
 // ── Agent Package (model + system prompt + tools + runtime) ───────────────────
@@ -229,13 +316,30 @@ const TOOL_IMPLS = {
 // Build the AI SDK tool set from the PACKAGE's contracts (description + JSON schema),
 // binding each to its implementation by name. The descriptions/schemas come from the
 // package — this file holds none of them.
+// Hard cap on ANY tool result's text payload. read_text_file caps itself, but
+// search_content (grepCorpus) could return up to ~40 matches × ~60 context lines
+// and blow the entire context window in a single step (observed: one result
+// pushed the prompt to ~32k tokens, truncating the model's answer to nothing).
+// This is the single choke point so no tool can starve the model of room.
+const RESULT_CAP = AGENT?.runtime?.max_tool_result_chars || 8000
+function capToolResult(result) {
+  if (result == null || typeof result !== 'object') return result
+  for (const key of ['text', 'content']) {
+    if (typeof result[key] === 'string' && result[key].length > RESULT_CAP) {
+      result[key] = result[key].slice(0, RESULT_CAP) +
+        `\n\n[TRUNCATED to ${RESULT_CAP} chars to fit the context window — refine the search for fewer/tighter matches.]`
+    }
+  }
+  return result
+}
+
 const tools = AGENT ? Object.fromEntries(
   AGENT.tools
     .filter(t => TOOL_IMPLS[t.name])
     .map(t => [t.name, {
       description: t.description || '',
       parameters: jsonSchema(t.parameters || { type: 'object', properties: {} }),
-      execute: TOOL_IMPLS[t.name],
+      execute: async (...a) => capToolResult(await TOOL_IMPLS[t.name](...a)),
     }])
 ) : {}
 const missing = AGENT ? AGENT.toolAllowlist.filter(n => !TOOL_IMPLS[n]) : []
@@ -373,12 +477,16 @@ const server = http.createServer(async (req, res) => {
         messages: body.messages,
         tools,
         temperature: AGENT.runtime.temperature ?? 0,
-        maxSteps: AGENT.runtime.max_steps || 10  // tool-call rounds, from the agent package
+        maxSteps: AGENT.runtime.max_steps || 10,  // tool-call rounds, from the agent package
+        // Local models emit in large bursts; pace BOTH answer and reasoning into
+        // evenly-spaced word deltas so the UI streams steadily instead of dumping.
+        experimental_transform: smoothBoth({ delayInMs: 18 }),
       })
 
       // pipeDataStreamToResponse sends the full AI SDK stream protocol
       // useChat on the frontend understands this natively — no extra config needed
       result.pipeDataStreamToResponse(res, {
+        sendReasoning: true,  // include <think> reasoning parts in the stream to the UI
         // Surface the real failure to the UI instead of the AI SDK's default
         // "An error occurred." Ollama returns a 500 when it can't load the model,
         // which on this air-gapped target almost always means not enough free RAM.

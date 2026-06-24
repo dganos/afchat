@@ -7,9 +7,13 @@ export function Message({ children, from = 'assistant', isThinking = false, clas
   const isUser = from === 'user'
 
   return (
-    <div className={cn('flex gap-3 mb-6', isUser ? 'flex-row-reverse' : '', className)}>
+    <div
+      role="article"
+      aria-label={isUser ? 'הודעה שלך' : 'תשובת אריסטו'}
+      className={cn('flex gap-3 mb-3', isUser ? 'flex-row-reverse' : '', className)}
+    >
       <MessageAvatar role={from} isThinking={isThinking} />
-      <div className={cn('flex flex-col gap-1', isUser ? 'items-end' : 'items-start', 'max-w-[80%]')}>
+      <div className={cn('flex flex-col gap-1', isUser ? 'items-end' : 'items-start', 'max-w-[86%]')}>
         {children}
       </div>
     </div>
@@ -22,7 +26,7 @@ export function MessageAvatar({ role, isThinking = false }) {
   return (
     <div className={cn(
       'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
-      isUser ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'
+      isUser ? 'bg-primary text-on-accent' : 'bg-surface-2 text-fg-muted'
     )}>
       {isUser
         ? <User className="h-4 w-4" />
@@ -39,10 +43,11 @@ export function MessageContent({ children, from = 'assistant', className }) {
 
   return (
     <div className={cn(
-      'rounded-2xl px-4 py-2.5 text-sm leading-relaxed',
+      // bubbles: --r-lg with one squared "tail" corner per side
+      'rounded-lg px-3 py-[9px] text-[15px] leading-relaxed',
       isUser
-        ? 'bg-primary text-primary-foreground rounded-tr-sm'
-        : 'bg-muted text-foreground rounded-tl-sm',
+        ? 'bg-user-bubble text-user-bubble-text rounded-br-[3px]'
+        : 'bg-assistant-bubble text-assistant-bubble-text border border-border rounded-bl-[3px]',
       className
     )}>
       {children}

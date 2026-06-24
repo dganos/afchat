@@ -8,6 +8,7 @@ import { Conversation, ConversationContent, ConversationScrollButton } from '@/c
 import { Message, MessageContent } from '@/components/ai-elements/message'
 import { PromptInput, PromptInputTextarea, PromptInputSubmit } from '@/components/ai-elements/prompt-input'
 import { Tool } from '@/components/ai-elements/tool'
+import { Reasoning } from '@/components/ai-elements/reasoning'
 import { FolderOpen, Settings2 } from 'lucide-react'
 import { HelicopterLoader } from '@/components/helicopter-loader'
 import { ResponseTimer } from '@/components/response-timer'
@@ -16,6 +17,7 @@ import { DocumentsPanel } from '@/components/documents-panel'
 import { ModelSelector } from '@/components/model-selector'
 import { MemoryMeter } from '@/components/memory-meter'
 import { SettingsPanel } from '@/components/settings-panel'
+import { ThemeToggle } from '@/components/theme-toggle'
 
 const DEFAULT_SETTINGS = { autoSearch: false }
 
@@ -101,24 +103,27 @@ export default function ChatPage() {
   return (
     <div className="flex flex-col h-screen" dir="rtl">
       {/* Header */}
-      <header className="flex items-center gap-2.5 px-4 py-0 bg-background">
-        <img src="./aristo-logo.png" alt="Aristo" className="h-28 w-auto select-none" draggable="false" />
+      <header className="flex items-center gap-2.5 px-4 py-2 border-b border-border bg-canvas">
+        <img src="./aristo-logo.png" alt="Aristo" className="h-20 w-auto select-none" draggable="false" />
         <div className="ms-auto flex items-center gap-1">
           <MemoryMeter />
           <ModelSelector />
           <button
             onClick={() => setDocsOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-muted-foreground rounded-md hover:bg-muted transition-colors"
+            aria-label="מסמכים"
+            className="flex items-center gap-1.5 px-2.5 min-h-9 text-xs text-fg-muted rounded-md hover:bg-surface-2 hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <FolderOpen className="h-3.5 w-3.5" />
             מסמכים
           </button>
           <button
             onClick={() => setSettingsOpen(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-muted-foreground rounded-md hover:bg-muted transition-colors"
+            aria-label="הגדרות"
+            className="flex items-center justify-center h-9 w-9 text-fg-muted rounded-md hover:bg-surface-2 hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Settings2 className="h-3.5 w-3.5" />
           </button>
+          <ThemeToggle />
         </div>
       </header>
 
@@ -157,22 +162,54 @@ export default function ChatPage() {
             </div>
           )}
 
-          {/* Message list */}
+          {/* Message list — streamed answers announced politely to screen readers */}
+          <div role="log" aria-live="polite" aria-relevant="additions text">
           {messages.map((msg) => (
             <Message key={msg.id} from={msg.role} isThinking={isBusy && msg.role === 'assistant' && msg === messages[messages.length - 1]}>
-              {msg.role === 'assistant' && durations[msg.id] != null && (
-                <span className="font-mono text-xs tabular-nums text-muted-foreground px-1">
-                  {durations[msg.id].toFixed(1)}s
-                </span>
-              )}
+              {/* Timer at the TOP of the bubble: live while this answer streams,
+                  frozen at its final value once done. */}
+              {msg.role === 'assistant' && (() => {
+                const isLastMsg = msg === messages[messages.length - 1]
+                if (isBusy && isLastMsg) {
+                  return <ResponseTimer running startTime={startRef.current} className="px-1" />
+                }
+                if (durations[msg.id] != null) {
+                  return (
+                    <span className="font-mono text-xs tabular-nums text-muted-foreground px-1">
+                      {durations[msg.id].toFixed(1)}s
+                    </span>
+                  )
+                }
+                return null
+              })()}
               <MessageContent from={msg.role}>
+                {/* Reasoning — consolidate all reasoning parts into ONE collapsible
+                    block (auto-open while streaming, auto-collapse when done). */}
+                {msg.role === 'assistant' && (() => {
+                  const reasoning = (msg.parts || [])
+                    .filter((p) => p.type === 'reasoning')
+                    .map((p) => p.reasoning ?? p.text ?? '')
+                    .join('\n\n')
+                    .trim()
+                  if (!reasoning) return null
+                  const isLast = msg === messages[messages.length - 1]
+                  return (
+                    <Reasoning isStreaming={isBusy && isLast} duration={durations[msg.id]}>
+                      {reasoning}
+                    </Reasoning>
+                  )
+                })()}
+
                 {msg.parts?.map((part, i) => {
+                  if (part.type === 'reasoning') return null
+
                   if (part.type === 'tool-invocation') {
                     return (
                       <Tool
                         key={i}
                         toolName={part.toolInvocation.toolName}
                         state={part.toolInvocation.state}
+                        args={part.toolInvocation.args}
                         result={part.toolInvocation.state === 'result' ? part.toolInvocation.result : null}
                       />
                     )
@@ -180,14 +217,22 @@ export default function ChatPage() {
 
                   if (part.type === 'text') {
                     if (msg.role === 'user') {
-                      return <span key={i}>{part.text}</span>
+                      return <span key={i} dir="auto">{part.text}</span>
                     }
+                    // NOTE: do NOT use Streamdown's `animated` word-stagger. It
+                    // fades words in with a 40ms stagger, which is fine for tiny
+                    // cloud token-deltas but on a LOCAL model (bursty chunks) makes
+                    // many words/lines fade in at once — looks like lines streaming
+                    // in parallel. Plain render streams naturally as text grows.
+                    const isLastMsg = msg === messages[messages.length - 1]
+                    const lastTextIdx = msg.parts.map((p) => p.type).lastIndexOf('text')
+                    const animating = isStreaming && isLastMsg && i === lastTextIdx
                     return (
                       <Streamdown
                         key={i}
+                        className="chat-prose"
                         plugins={{ code }}
-                        isAnimating={isStreaming && msg === messages[messages.length - 1]}
-                        animated
+                        isAnimating={animating}
                       >
                         {part.text}
                       </Streamdown>
@@ -199,21 +244,24 @@ export default function ChatPage() {
               </MessageContent>
             </Message>
           ))}
+          </div>
 
           {/* Chat error — show the real failure instead of silently returning nothing */}
           {error && !isBusy && (
-            <div className="mx-auto my-4 max-w-xl rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive" dir="auto">
+            <div role="alert" className="mx-auto my-4 max-w-xl rounded-md border border-wrong-border bg-wrong px-4 py-3 text-sm text-wrong-text" dir="auto">
               {error.message || 'אירעה שגיאה בעת יצירת התשובה.'}
             </div>
           )}
 
-          {/* Activity indicator + live timer — shown while waiting or streaming */}
-          {isBusy && (
+          {/* Activity indicator — only while WAITING for the first token (no
+              assistant bubble yet). Once the bubble appears, its top-of-bubble
+              timer takes over, so we don't double up. */}
+          {isBusy && messages[messages.length - 1]?.role !== 'assistant' && (
             <div className="flex items-center gap-3 mb-6">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-surface-2 text-fg-muted">
                 <HelicopterLoader className="h-5 w-5" />
               </div>
-              <ResponseTimer running={isBusy} />
+              <ResponseTimer running={isBusy} startTime={startRef.current} />
             </div>
           )}
 
