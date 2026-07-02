@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { Cpu, ChevronDown, Check, AlertTriangle } from 'lucide-react'
+import { Cpu, ChevronDown, Check, AlertTriangle, PowerOff } from 'lucide-react'
 import { HelicopterLoader } from '@/components/helicopter-loader'
 
 const API = 'http://localhost:3001'
@@ -29,6 +29,7 @@ export function ModelSelector({ onModelChange }) {
   const [switching, setSwitching] = useState(null)
   const [loadProgress, setLoadProgress] = useState(0)
   const [error, setError] = useState(null)
+  const [ejecting, setEjecting] = useState(false)
   const ref = useRef(null)
   const progressTimerRef = useRef(null)
 
@@ -107,6 +108,22 @@ export function ModelSelector({ onModelChange }) {
     setSwitching(null)
   }
 
+  // Unload the resident model from RAM. The next message reloads it (cold).
+  const ejectModel = async () => {
+    if (ejecting) return
+    setEjecting(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API}/models/eject`, { method: 'POST' })
+      const data = await res.json()
+      if (data.error) setError({ message: data.error })
+      await fetchModels()
+    } catch (err) {
+      setError({ message: err.message })
+    }
+    setEjecting(false)
+  }
+
   useEffect(() => () => clearInterval(progressTimerRef.current), [])
 
   return (
@@ -122,11 +139,22 @@ export function ModelSelector({ onModelChange }) {
 
       {open && (
         <div className="absolute top-full right-0 mt-1 w-80 bg-background border rounded-lg shadow-xl z-50 overflow-hidden">
-          {/* Memory info */}
+          {/* Memory info + eject */}
           {memory && (
-            <div className="px-3 py-2 bg-surface-2 border-b text-[11px] text-muted-foreground flex gap-3">
+            <div className="px-3 py-2 bg-surface-2 border-b text-[11px] text-muted-foreground flex items-center gap-3">
               <span>Total: {formatBytes(memory.total)}</span>
               <span>Free: {formatBytes(memory.free)}</span>
+              {memory.loaded > 0 && (
+                <button
+                  onClick={ejectModel}
+                  disabled={ejecting || !!switching}
+                  title="Unload the model from RAM to free memory"
+                  className="ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] text-muted-foreground hover:bg-muted hover:text-fg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {ejecting ? <HelicopterLoader className="h-3 w-3" /> : <PowerOff className="h-3 w-3" />}
+                  {ejecting ? 'Ejecting…' : `Eject (${formatBytes(memory.loaded)})`}
+                </button>
+              )}
             </div>
           )}
 
@@ -162,7 +190,7 @@ export function ModelSelector({ onModelChange }) {
                 <button
                   key={m.name}
                   onClick={() => selectModel(m.name)}
-                  disabled={!!switching || !m.fitsInRAM}
+                  disabled={!!switching}
                   className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {/* Active indicator */}

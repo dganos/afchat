@@ -1028,6 +1028,31 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Select a model
+  // Eject — unload the resident model(s) from RAM to free memory. The next
+  // message reloads the model cold (so the first answer after ejecting is slower).
+  if (req.method === 'POST' && req.url === '/models/eject') {
+    try {
+      const psRes = await fetch(`${OLLAMA_BASE}/api/ps`).catch(() => null)
+      const psData = psRes ? await psRes.json().catch(() => ({ models: [] })) : { models: [] }
+      const loaded = psData.models || []
+      for (const m of loaded) {
+        try {
+          await fetch(`${OLLAMA_BASE}/api/generate`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: m.name, prompt: '', keep_alive: 0 }),
+          })
+          console.log(`[api] ejected model from RAM: ${m.name}`)
+        } catch (e) { console.warn(`[api] failed to eject ${m.name}: ${e.message}`) }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: true, ejected: loaded.map(m => m.name) }))
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: err.message }))
+    }
+    return
+  }
+
   if (req.method === 'POST' && req.url === '/models/select') {
     const body = await new Promise((resolve, reject) => {
       let data = ''
@@ -1068,16 +1093,10 @@ const server = http.createServer(async (req, res) => {
         .reduce((a, m) => a + (m.size || 0), 0)
       const effectiveFree = freeRAM + evictableSize
 
+      // Report whether it comfortably fits, but do NOT block the switch — the user
+      // may choose to load a tight model anyway (we evict others first to free RAM).
       const fitsInRAM = match.size < effectiveFree * 0.9
-      if (!fitsInRAM) {
-        res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({
-          error: 'Model does not fit in available RAM',
-          modelSize: match.size,
-          freeRAM: effectiveFree
-        }))
-        return
-      }
+      if (!fitsInRAM) console.warn(`[api] loading ${body.model} despite tight RAM (needs ${(match.size/1e9).toFixed(1)}GB, ~${(effectiveFree/1e9).toFixed(1)}GB free after eviction)`)
 
       // Evict any other resident models before loading the new one. Belt-
       // and-suspenders alongside OLLAMA_MAX_LOADED_MODELS=1 — guarantees the

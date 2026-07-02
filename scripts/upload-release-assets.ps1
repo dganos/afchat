@@ -5,12 +5,22 @@ param(
   [int]    $ReleaseId = 344165213,
   [string] $Repo      = 'dganos/afchat',
   [string] $DistDir   = 'C:\workarea\afchat\dist',
-  [string[]] $Assets  = @(
-    'Aristo-Windows-models.zip.part00',
-    'Aristo-Windows-models.zip.part01',
-    'Aristo-Windows-models.zip.part02'
-  )
+  # Leave empty to auto-discover every model-zip part in $DistDir. The number of
+  # parts grows with the bundled models (each part is <2 GB per GitHub's limit),
+  # so hardcoding a fixed count would silently skip parts.
+  [string[]] $Assets  = @()
 )
+
+# Auto-discover the split model-zip parts when none were given explicitly.
+if (-not $Assets -or $Assets.Count -eq 0) {
+  $Assets = Get-ChildItem -Path $DistDir -Filter 'Aristo-Windows-models.zip.part*' -ErrorAction SilentlyContinue |
+            Sort-Object Name | Select-Object -ExpandProperty Name
+  if (-not $Assets -or $Assets.Count -eq 0) {
+    Write-Output "No model-zip parts (Aristo-Windows-models.zip.part*) found in $DistDir"
+    return
+  }
+  Write-Output ("Discovered {0} model-zip part(s): {1}" -f $Assets.Count, ($Assets -join ', '))
+}
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $token = (Get-Content (Join-Path $env:TEMP '.ghtok') -Raw).Trim()
