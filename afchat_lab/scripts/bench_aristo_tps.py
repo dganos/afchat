@@ -107,9 +107,9 @@ def load_package(explicit):
     for base in candidates:
         pkg = base / "package.json"
         if pkg.exists():
-            d = json.loads(pkg.read_text())
+            d = json.loads(pkg.read_text(encoding="utf-8"))
             spf = base / d.get("system_prompt_file", "system_prompt.md")
-            sysmsg = spf.read_text() if spf.exists() else _fallback_prompt()
+            sysmsg = spf.read_text(encoding="utf-8") if spf.exists() else _fallback_prompt()
             return {
                 "model": d.get("model", {}).get("id", ARISTO_MODEL),
                 "num_ctx": d.get("model", {}).get("context_length", ARISTO_NUM_CTX),
