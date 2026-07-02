@@ -7,6 +7,13 @@ let ollamaProcess = null
 let mainWindow = null
 const earlyLogs = []
 
+// The app runs its OWN bundled Ollama on a private port and serves models only
+// from its bundled store — it must never touch a system-installed Ollama. We
+// avoid the default 11434 on purpose: if the user has their own Ollama there, a
+// shared port would let the app silently bind-fail and talk to theirs instead.
+const OLLAMA_PORT = process.env.ARISTO_OLLAMA_PORT || '11435'
+const OLLAMA_BASE = `http://localhost:${OLLAMA_PORT}`
+
 function sendLog(source, text) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('log', source, text)
@@ -37,19 +44,22 @@ function startOllama() {
   const bin = getResourcePath(
     process.platform === 'win32' ? 'ollama/ollama.exe' : 'ollama/ollama'
   )
-  // Dev box (e.g. a git clone with no bundled runtime): fall back to a
-  // system-installed Ollama already serving on :11434. waitForPort() below blocks
-  // until it's reachable, so we just skip spawning our own.
+  // The bundled runtime is required — we never fall back to a system Ollama, so
+  // that the app only ever uses its own binary, port, and bundled models. If the
+  // binary is missing this is a hard, visible failure (the API health check will
+  // fail and the window surfaces it) rather than a silent hand-off to the user's
+  // own Ollama.
   if (!fs.existsSync(bin)) {
-    console.log('[ollama] no bundled runtime found — using a system Ollama on :11434')
-    sendLog('ollama', 'using system-installed Ollama (no bundled runtime)\n')
+    const msg = `[ollama] FATAL: bundled runtime not found at ${bin} — the app cannot start its own Ollama.`
+    console.error(msg)
+    sendLog('ollama', msg + '\n')
     return
   }
   ollamaProcess = spawn(bin, ['serve'], {
     env: {
       ...process.env,
       OLLAMA_MODELS: getResourcePath('models'),
-      OLLAMA_HOST: '127.0.0.1:11434',
+      OLLAMA_HOST: `127.0.0.1:${OLLAMA_PORT}`,
       // Keep at most one model resident — this is an 8 GB air-gapped target,
       // two models swapping into RAM thrashes swap (which is disabled).
       OLLAMA_MAX_LOADED_MODELS: '1',
@@ -77,8 +87,13 @@ function startOllama() {
 app.whenReady().then(async () => {
   startOllama()
 
-  // Pass documents path to the API server via env
+  // Pass documents path + the private Ollama port to the API server via env, so
+  // it talks to our bundled Ollama and never the system default port.
   process.env.DOCS_PATH = getResourcePath('documents')
+  process.env.ARISTO_OLLAMA_PORT = OLLAMA_PORT
+  // Writable dir for user edits (e.g. the system-prompt override) — userData is
+  // writable in both dev and packaged builds (the bundled resources are not).
+  process.env.ARISTO_DATA_DIR = app.getPath('userData')
 
   // Intercept console to capture API logs
   const origLog = console.log
@@ -101,7 +116,7 @@ app.whenReady().then(async () => {
 
   // Wait for backends — and in dev, also wait for the Next dev server.
   const waits = [
-    waitForPort('http://localhost:11434'),
+    waitForPort(OLLAMA_BASE),
     waitForPort('http://localhost:3001/health')
   ]
   if (isDev) waits.push(waitForPort('http://localhost:3000'))

@@ -3,7 +3,7 @@ const path = require('path')
 const fs = require('fs')
 const os = require('os')
 const { createOllama } = require('ollama-ai-provider')
-const { streamText, generateText, wrapLanguageModel, extractReasoningMiddleware, jsonSchema } = require('ai')
+const { streamText, generateText, wrapLanguageModel, extractReasoningMiddleware, jsonSchema, pipeDataStreamToResponse, formatDataStreamPart } = require('ai')
 
 // Like the AI SDK's smoothStream, but paces BOTH the answer (`text-delta`) and
 // the reasoning (`reasoning`) word-by-word. smoothStream only smooths text, so
@@ -43,14 +43,22 @@ function smoothBoth({ delayInMs = 18 } = {}) {
 const mammoth = require('mammoth')
 const { PDFParse } = require('pdf-parse')
 
-const { selectDefaultModel } = require('./model-selection')
 const { availableMemory } = require('./available-memory')
 const { loadPackage, resolveOllamaModel } = require('./agent-package')
 
-// Default model is resolved lazily on the first request — Ollama may not be
-// up yet when this module loads, and we want to pick from actually-installed
-// models rather than a hardcoded name. We prefer the agent package's model when
-// it is installed, otherwise fall back to auto-selection by RAM fit.
+// The app talks ONLY to its own bundled Ollama, which the launcher (main.js /
+// start-server.js) starts on a private port and serves from resources/models.
+// We deliberately do NOT use the system default port (11434): if the user has a
+// system-installed Ollama running there, the app must never fall back to it or
+// to its models. The launcher passes the port via ARISTO_OLLAMA_PORT; the
+// default here matches the launcher's default so the two never drift.
+const OLLAMA_PORT = process.env.ARISTO_OLLAMA_PORT || '11435'
+const OLLAMA_BASE = `http://localhost:${OLLAMA_PORT}`
+
+// The model is the one pinned by the agent package, served from the bundled
+// models directory. It is resolved lazily on the first request because the
+// bundled Ollama may not be up yet when this module loads. We never auto-select
+// a different installed model — the app ships exactly one model on purpose.
 let currentModel = null
 // Flips true once the model is warmed up (loaded into memory) at startup, so the UI
 // can show a loading state and block input until the first question will be fast.
@@ -63,7 +71,7 @@ let modelError = null
 // memory-aware error the /models/select endpoint already gives the UI).
 async function memoryHint(model) {
   try {
-    const tags = await (await fetch('http://localhost:11434/api/tags')).json()
+    const tags = await (await fetch(`${OLLAMA_BASE}/api/tags`)).json()
     const m = (tags.models || []).find(x => x.name === model || x.model === model)
     const free = availableMemory()
     if (m && m.size && free && m.size > free) {
@@ -76,15 +84,21 @@ async function memoryHint(model) {
 async function ensureCurrentModel() {
   if (currentModel) return currentModel
   try {
-    const res = await fetch('http://localhost:11434/api/tags')
+    const res = await fetch(`${OLLAMA_BASE}/api/tags`)
     const data = await res.json()
+    // Only ever use the model the agent package pins, served from the bundled
+    // models dir. If it is missing, surface that — never substitute a different
+    // (e.g. system-installed) model.
     const fromPkg = resolveOllamaModel(data.models || [], AGENT?.model?.id)
-    currentModel = fromPkg || selectDefaultModel(os.totalmem(), data.models || [])
-    if (fromPkg) console.log(`[api] using agent-package model: ${currentModel}`)
-    else if (currentModel) console.log(`[api] package model not installed; auto-selected: ${currentModel}`)
-    else console.warn('[api] no models installed — UI must pick one')
+    if (fromPkg) {
+      currentModel = fromPkg
+      console.log(`[api] using agent-package model: ${currentModel}`)
+    } else {
+      modelError = `The bundled model "${AGENT?.model?.id || '(none)'}" was not found in the app's model store.`
+      console.error(`[api] ${modelError}`)
+    }
   } catch (err) {
-    console.error('[api] could not auto-select model:', err.message)
+    console.error('[api] could not reach the bundled Ollama:', err.message)
   }
   return currentModel
 }
@@ -167,7 +181,7 @@ const ollamaFetch = async (url, init) => {
   } catch { /* fall through to the unmodified response */ }
   return res
 }
-const ollama = createOllama({ baseURL: 'http://localhost:11434/api', fetch: ollamaFetch })
+const ollama = createOllama({ baseURL: `${OLLAMA_BASE}/api`, fetch: ollamaFetch })
 // ollama-ai-provider v1.2.0 streaming doesn't parse tool_calls from Ollama's
 // response (only tries to infer them from text content). With thinking models
 // like qwen3 the tool calls come in a structured field that the stream parser
@@ -232,6 +246,40 @@ const AGENT = (() => {
     return null
   }
 })()
+
+// Editable system prompt. Starts from the agent package, but the user can edit it
+// in Settings and reload it live (takes effect on the next message; the chat
+// history is NOT cleared). Edits persist to a writable override file so they
+// survive restarts; the package's own prompt file stays untouched as the default.
+const DATA_DIR = process.env.ARISTO_DATA_DIR || path.join(__dirname, '..', '.data')
+const SYSTEM_PROMPT_OVERRIDE = path.join(DATA_DIR, 'system_prompt.override.md')
+let currentSystemPrompt = AGENT?.system_prompt || ''
+try {
+  if (fs.existsSync(SYSTEM_PROMPT_OVERRIDE)) {
+    const saved = fs.readFileSync(SYSTEM_PROMPT_OVERRIDE, 'utf-8')
+    if (saved && saved.trim()) { currentSystemPrompt = saved.trim(); console.log('[api] loaded saved system-prompt override') }
+  }
+} catch (e) { console.warn('[api] could not load system-prompt override:', e.message) }
+
+// Re-prime Ollama's prompt cache with the (new) system prefix in the background,
+// so the first message after an edit isn't slowed by a full re-prefill. Best-effort.
+async function reprimeSystemPrompt() {
+  if (!currentModel) return
+  try {
+    const ollamaTools = buildOllamaTools()
+    await fetch(`${OLLAMA_BASE}/api/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: currentModel,
+        messages: [{ role: 'system', content: currentSystemPrompt }, { role: 'user', content: 'hi' }],
+        tools: ollamaTools.length ? ollamaTools : undefined,
+        stream: false, keep_alive: -1,
+        options: { num_ctx: AGENT?.model?.context_length || undefined },
+      }),
+    })
+    console.log('[api] re-primed prompt cache for the edited system prompt')
+  } catch (e) { console.warn('[api] re-prime failed (next message will prefill):', e.message) }
+}
 
 // ── Tools ────────────────────────────────────────────────────────────────────
 
@@ -444,57 +492,247 @@ async function autoSearch(userMessage) {
 // Ollama with the app's EXACT config (agent-package model + context + system
 // prompt + warm-up). Same logic as scripts/bench_aristo_tps.py, in-process so the
 // Settings panel can run it. Reads Ollama's native token counters (exact).
-async function runSpeedTest() {
-  const base = 'http://localhost:11434'
+// Runs the throughput benchmark, reporting progress live through `send` so the
+// UI can drive a speedometer as it goes (instead of waiting ~15-20s for one
+// blob). Events: { type:'step', label } on each phase change, { type:'tps',
+// phase, value } for each live reading (windowed during generation, one per run
+// for prefill), and a final { type:'done', ... }. `signal` lets the client abort
+// mid-run — it's threaded into every Ollama fetch so the in-flight call is cut.
+async function runSpeedTest(send, signal) {
+  const base = OLLAMA_BASE
   const model = currentModel
   const numCtx = AGENT?.model?.context_length || 8192
-  const sys = AGENT?.system_prompt || ''
+  const sys = currentSystemPrompt
   const temp = AGENT?.runtime?.temperature ?? 0
-  const chat = async (messages, numPredict, ctx = numCtx) => {
-    const r = await fetch(`${base}/api/chat`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, stream: false, messages, options: { temperature: temp, num_ctx: ctx, num_predict: numPredict } }),
-    })
-    if (!r.ok) throw new Error(`Ollama /api/chat returned ${r.status}`)
-    return r.json()
-  }
   const tps = (cnt, durNs) => (durNs ? +(cnt / (durNs / 1e9)).toFixed(1) : 0)
 
-  // warm-up (load weights + cache the system prefix), discarded
-  await chat([{ role: 'system', content: sys }, { role: 'user', content: 'hi' }], 8)
+  // Streaming Ollama chat. `onToken` fires once per generated token so the caller
+  // can compute a windowed, live tok/s for the gauge. Returns the final summary
+  // chunk (eval_count / eval_duration / prompt_eval_*).
+  const chat = async (messages, numPredict, ctx, onToken) => {
+    const r = await fetch(`${base}/api/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, stream: true, messages, options: { temperature: temp, num_ctx: ctx, num_predict: numPredict } }),
+      signal,
+    })
+    if (!r.ok) throw new Error(`Ollama /api/chat returned ${r.status}`)
+    const dec = new TextDecoder()
+    let buf = '', final = null
+    for await (const chunk of r.body) {
+      buf += dec.decode(chunk, { stream: true })
+      let nl
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1)
+        if (!line) continue
+        const d = JSON.parse(line)
+        // Count tokens from BOTH content and `thinking` — gemma & other thinking
+        // models stream their reasoning into message.thinking, so a content-only
+        // counter would read 0 tok/s for the whole (thinking-heavy) generation.
+        if ((d.message?.content || d.message?.thinking) && onToken) onToken()
+        if (d.done) final = d
+      }
+    }
+    return final || {}
+  }
 
-  // generation throughput (prefix cached → isolates output speed)
+  // warm-up (load weights + cache the system prefix), discarded
+  send({ type: 'step', label: 'Warming up…' })
+  await chat([{ role: 'system', content: sys }, { role: 'user', content: 'hi' }], 8, numCtx)
+
+  // generation throughput (prefix cached → isolates output speed). Emit a windowed
+  // reading every ~300ms so the needle tracks the live generation rate.
   const GEN = 'Explain in detail, step by step and across several paragraphs, how a helicopter main rotor produces lift, and how collective pitch, cyclic pitch, and the tail rotor each control the aircraft. Be thorough.'
   let gTok = 0, gNs = 0; const gPer = []
   for (let i = 0; i < 3; i++) {
-    const d = await chat([{ role: 'system', content: sys }, { role: 'user', content: GEN }], 160)
+    send({ type: 'step', label: `Generation ${i + 1}/3` })
+    let wTok = 0, wStart = Date.now()
+    const d = await chat([{ role: 'system', content: sys }, { role: 'user', content: GEN }], 160, numCtx, () => {
+      wTok++
+      const dt = Date.now() - wStart
+      if (dt >= 300) { send({ type: 'tps', phase: 'gen', value: +(wTok / (dt / 1000)).toFixed(1) }); wTok = 0; wStart = Date.now() }
+    })
     gTok += d.eval_count || 0; gNs += d.eval_duration || 0
     gPer.push(tps(d.eval_count || 0, d.eval_duration || 0))
   }
 
-  // prefill throughput (unique prompt each run so the cache can't inflate it)
-  const PREFILL_TOK = 2048
-  const words = 'rotor lift collective cyclic pitch torque tail autorotation airspeed altitude procedure limit emergency checklist engine hydraulic warning'.split(' ')
-  const filler = (salt) => {
-    let s = `ref${salt} `
-    for (let i = 0, n = Math.round(PREFILL_TOK / 0.75); i < n; i++) s += words[i % words.length] + ' '
-    return s
-  }
-  let pTok = 0, pNs = 0
-  for (let i = 0; i < 2; i++) {
-    const d = await chat([{ role: 'system', content: sys }, { role: 'user', content: filler(`${i}-${Date.now()}`) + '\n\nReply OK.' }], 1, Math.max(numCtx, PREFILL_TOK + 1024))
-    pTok += d.prompt_eval_count || 0; pNs += d.prompt_eval_duration || 0
-  }
-
   const cpus = os.cpus() || []
-  return {
-    genTps: tps(gTok, gNs), genPerRun: gPer, prefillTps: tps(pTok, pNs),
+  send({
+    type: 'done',
+    genTps: tps(gTok, gNs), genPerRun: gPer,
     model, numCtx,
     machine: {
       cpu: cpus[0]?.model || os.arch(), cores: cpus.length || 0,
       ramGB: +(os.totalmem() / 1024 ** 3).toFixed(1), platform: os.platform(), arch: os.arch(),
     },
+  })
+}
+
+// ── Real-streaming chat ─────────────────────────────────────────────────────
+// We talk to Ollama's STREAMING /api/chat directly (rather than the AI SDK's
+// simulateStreaming, which runs non-streaming and only replays the finished
+// answer). This makes the first thinking/answer token appear right after prefill
+// instead of after the whole answer is generated — the dominant TTFT cost.
+// The output is written in the AI SDK data-stream protocol so the existing
+// useChat frontend keeps working unchanged. We re-implement the tool-call loop
+// here because ollama-ai-provider v1.2.0's streaming path can't parse gemma's
+// thinking field or its (often text-shaped) tool calls.
+
+// Tools in Ollama's format. Shared with warm-up so the prefilled system+tools
+// prefix is byte-identical and Ollama serves the first real turn from its cache.
+function buildOllamaTools() {
+  const names = (AGENT?.toolAllowlist?.length ? AGENT.toolAllowlist : (AGENT?.tools || []).map(t => t.name))
+  return names
+    .map(n => (AGENT?.tools || []).find(t => t.name === n))
+    .filter(t => t && TOOL_IMPLS[t.name])
+    .map(t => ({ type: 'function', function: { name: t.name, description: t.description || '', parameters: t.parameters || { type: 'object', properties: {} } } }))
+}
+
+const TEXT_CALL_RE = /call:\s*[a-zA-Z_]\w*\s*\{/  // gemma sometimes emits a tool call as raw text
+
+// Transient connection failures we can safely retry. The most common is an idle
+// keep-alive socket that Ollama closed and undici's pool then reused → ECONNRESET
+// on the first request after a pause (e.g. right after warm-up).
+const TRANSIENT_NET_RE = /ECONNRESET|fetch failed|socket hang up|other side closed|EPIPE/i
+const isTransientNetErr = (e) =>
+  TRANSIENT_NET_RE.test(`${e?.message || ''} ${e?.cause?.message || e?.cause || ''}`)
+
+// Stream a single assistant turn from Ollama, forwarding thinking → `reasoning`
+// and answer text → `text` parts live. Detects tool calls (structured, or
+// gemma's text-shaped form) and returns them for the caller to execute. Retries
+// once on a transient connection reset, but only while nothing has been emitted
+// yet (so a mid-stream drop can't duplicate output).
+async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, signal }) {
+  for (let attempt = 0; ; attempt++) {
+    const dec = new TextDecoder()
+    let buf = '', content = '', sentLen = 0, frozen = false, emitted = false
+    const toolCalls = []
+    let promptTokens = 0, completionTokens = 0
+
+    // Stream answer text with a small holdback so a partial `call:` marker is never
+    // shown; freeze output entirely once a text tool call is recognized.
+    const flushContent = (final = false) => {
+      if (frozen) return
+      if (TEXT_CALL_RE.test(content)) { frozen = true; return }
+      const HOLD = 16
+      const upto = final ? content.length : Math.max(sentLen, content.length - HOLD)
+      if (upto > sentLen) { send('text', content.slice(sentLen, upto)); sentLen = upto; emitted = true }
+    }
+
+    try {
+      const r = await fetch(`${OLLAMA_BASE}/api/chat`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: currentModel, messages,
+          tools: ollamaTools.length ? ollamaTools : undefined,
+          stream: true, keep_alive: -1,
+          options: { temperature: temp, num_ctx: numCtx },
+        }),
+        signal,
+      })
+      if (!r.ok) {
+        const detail = (await r.text().catch(() => '')).slice(0, 300)
+        throw new Error(`Ollama /api/chat returned ${r.status}. ${detail}`)
+      }
+
+      for await (const chunk of r.body) {
+        buf += dec.decode(chunk, { stream: true })
+        let nl
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1)
+          if (!line) continue
+          let d; try { d = JSON.parse(line) } catch { continue }
+          const msg = d.message || {}
+          if (msg.thinking) { send('reasoning', msg.thinking); emitted = true }
+          if (Array.isArray(msg.tool_calls)) {
+            for (const tc of msg.tool_calls) {
+              const fn = tc.function || {}
+              let args = fn.arguments
+              if (typeof args === 'string') { try { args = JSON.parse(args) } catch { args = {} } }
+              toolCalls.push({ id: `call_${toolCalls.length}_${fn.name}`, name: fn.name, args: args || {} })
+            }
+          }
+          if (msg.content) { content += msg.content; flushContent() }
+          if (d.done) { promptTokens = d.prompt_eval_count || 0; completionTokens = d.eval_count || 0 }
+        }
+      }
+    } catch (e) {
+      // Retry a fresh connection once if Ollama dropped the socket before we
+      // streamed anything; otherwise surface the failure.
+      if (attempt === 0 && !emitted && !signal.aborted && isTransientNetErr(e)) {
+        console.log('[api] chat: transient Ollama connection drop, retrying once')
+        await new Promise((r) => setTimeout(r, 150))
+        continue
+      }
+      throw e
+    }
+
+    // gemma fallback: a tool call left as raw text rather than a structured field.
+    if (!toolCalls.length && TEXT_CALL_RE.test(content)) {
+      const repaired = repairGemmaToolCall(content)
+      if (repaired && TOOL_IMPLS[repaired.name]) {
+        toolCalls.push({ id: `call_0_${repaired.name}`, name: repaired.name, args: repaired.arguments })
+      }
+    }
+    if (!toolCalls.length) flushContent(true)  // final answer: flush the held tail
+
+    return { content, toolCalls, promptTokens, completionTokens }
   }
+}
+
+// Drive the full multi-step agent loop, writing AI SDK data-stream parts.
+async function streamChatResponse({ writer, systemPrompt, uiMessages, signal }) {
+  const send = (type, value) => writer.write(formatDataStreamPart(type, value))
+  const temp = AGENT?.runtime?.temperature ?? 0
+  const numCtx = AGENT?.model?.context_length || 8192
+  const maxSteps = AGENT?.runtime?.max_steps || 10
+  const ollamaTools = buildOllamaTools()
+
+  // History → plain user/assistant text. Reasoning is display-only and prior tool
+  // mechanics aren't needed to continue; the current turn's tool calls/results are
+  // built below in Ollama's native shape.
+  const uiText = (m) => {
+    if (Array.isArray(m.parts)) {
+      const t = m.parts.filter(p => p.type === 'text').map(p => p.text).join('')
+      if (t) return t
+    }
+    return typeof m.content === 'string' ? m.content : ''
+  }
+  const messages = [{ role: 'system', content: systemPrompt }]
+  for (const m of uiMessages || []) {
+    if (m.role !== 'user' && m.role !== 'assistant') continue
+    const text = uiText(m)
+    if (text) messages.push({ role: m.role, content: text })
+  }
+
+  let promptTokens = 0, completionTokens = 0
+  for (let step = 0; step < maxSteps; step++) {
+    send('start_step', { messageId: `aristo-step-${step}` })
+    const turn = await streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, signal })
+    promptTokens += turn.promptTokens
+    completionTokens += turn.completionTokens
+    const stepUsage = { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens }
+
+    if (turn.toolCalls.length) {
+      messages.push({
+        role: 'assistant', content: turn.content || '',
+        tool_calls: turn.toolCalls.map(tc => ({ function: { name: tc.name, arguments: tc.args } })),
+      })
+      for (const tc of turn.toolCalls) {
+        send('tool_call', { toolCallId: tc.id, toolName: tc.name, args: tc.args })
+        let result
+        try { result = capToolResult(await TOOL_IMPLS[tc.name](tc.args)) }
+        catch (e) { result = { error: e.message } }
+        send('tool_result', { toolCallId: tc.id, result })
+        messages.push({ role: 'tool', content: typeof result === 'string' ? result : JSON.stringify(result) })
+      }
+      send('finish_step', { finishReason: 'tool-calls', usage: stepUsage, isContinued: false })
+      continue
+    }
+
+    send('finish_step', { finishReason: 'stop', usage: stepUsage, isContinued: false })
+    break
+  }
+  send('finish_message', { finishReason: 'stop', usage: { promptTokens, completionTokens } })
 }
 
 const server = http.createServer(async (req, res) => {
@@ -531,7 +769,7 @@ const server = http.createServer(async (req, res) => {
     const free = availableMemory()
     let loaded = 0
     try {
-      const psRes = await fetch('http://localhost:11434/api/ps')
+      const psRes = await fetch(`${OLLAMA_BASE}/api/ps`)
       const psData = await psRes.json()
       loaded = (psData.models || []).reduce((a, m) => a + (m.size || 0), 0)
     } catch {}
@@ -545,10 +783,57 @@ const server = http.createServer(async (req, res) => {
   // so it updates live (and drops the moment the history is compacted).
   if (req.method === 'GET' && req.url === '/context') {
     const baseTokens = AGENT
-      ? Math.ceil((AGENT.system_prompt.length + JSON.stringify(AGENT.tools || []).length) / 3.5)
+      ? Math.ceil((currentSystemPrompt.length + JSON.stringify(AGENT.tools || []).length) / 3.5)
       : 0
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ total: AGENT?.model?.context_length || 0, baseTokens }))
+    return
+  }
+
+  // System prompt — view the current (possibly edited) prompt.
+  if (req.method === 'GET' && req.url === '/system-prompt') {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      prompt: currentSystemPrompt,
+      isDefault: currentSystemPrompt === (AGENT?.system_prompt || ''),
+    }))
+    return
+  }
+
+  // System prompt — edit + reload it live. Takes effect on the next message; the
+  // chat history is intentionally left untouched. `{ reset: true }` reverts to the
+  // package default. Persists to the override file so the change survives restarts.
+  if (req.method === 'POST' && req.url === '/system-prompt') {
+    try {
+      const body = await new Promise((resolve, reject) => {
+        let data = ''
+        req.on('data', (c) => { data += c })
+        req.on('end', () => { try { resolve(JSON.parse(data || '{}')) } catch (e) { reject(e) } })
+      })
+      if (body.reset) {
+        currentSystemPrompt = AGENT?.system_prompt || ''
+        try { fs.existsSync(SYSTEM_PROMPT_OVERRIDE) && fs.unlinkSync(SYSTEM_PROMPT_OVERRIDE) } catch {}
+      } else {
+        const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
+        if (!prompt) {
+          res.writeHead(400, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: 'System prompt cannot be empty.' }))
+          return
+        }
+        currentSystemPrompt = prompt
+        try {
+          fs.mkdirSync(DATA_DIR, { recursive: true })
+          fs.writeFileSync(SYSTEM_PROMPT_OVERRIDE, prompt, 'utf-8')
+        } catch (e) { console.warn('[api] could not persist system-prompt override:', e.message) }
+      }
+      console.log(`[api] system prompt reloaded (${currentSystemPrompt.length} chars)${body.reset ? ' [reset to default]' : ''}`)
+      reprimeSystemPrompt()  // fire-and-forget: warm the new prefix so the next message is fast
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, length: currentSystemPrompt.length, isDefault: currentSystemPrompt === (AGENT?.system_prompt || '') }))
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: e.message }))
+    }
     return
   }
 
@@ -606,14 +891,23 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'Model not ready.' }))
       return
     }
+    // Stream progress as SSE so the UI can animate a live speedometer. The client
+    // aborting the fetch closes the request, which aborts the in-flight Ollama call.
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    })
+    const ac = new AbortController()
+    req.on('close', () => ac.abort())
+    const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`) } catch {} }
     try {
-      const result = await runSpeedTest()
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(result))
+      await runSpeedTest(send, ac.signal)
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: e.message }))
+      if (!ac.signal.aborted) send({ type: 'error', error: e.message })
     }
+    res.end()
     return
   }
 
@@ -645,9 +939,9 @@ const server = http.createServer(async (req, res) => {
     const lastMsg = body.messages?.[msgCount - 1]
     console.log(`[api] chat request: ${msgCount} messages, last from ${lastMsg?.role}`)
 
-    // Auto pre-search: inject document context if enabled. The base prompt comes
-    // from the active agent package.
-    let systemPrompt = AGENT.system_prompt
+    // Auto pre-search: inject document context if enabled. The base prompt is the
+    // current (possibly user-edited) system prompt.
+    let systemPrompt = currentSystemPrompt
     if (body.autoSearch && lastMsg?.role === 'user') {
       const searchResults = await autoSearch(lastMsg.content)
       if (searchResults) {
@@ -657,43 +951,32 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    try {
-      const result = streamText({
-        model: ollamaModel(currentModel),
-        system: systemPrompt,
-        messages: body.messages,
-        tools,
-        temperature: AGENT.runtime.temperature ?? 0,
-        maxSteps: AGENT.runtime.max_steps || 10,  // tool-call rounds, from the agent package
-        // Local models emit in large bursts; pace BOTH answer and reasoning into
-        // evenly-spaced word deltas so the UI streams steadily instead of dumping.
-        experimental_transform: smoothBoth({ delayInMs: 18 }),
-      })
-
-      // pipeDataStreamToResponse sends the full AI SDK stream protocol
-      // useChat on the frontend understands this natively — no extra config needed
-      result.pipeDataStreamToResponse(res, {
-        sendReasoning: true,  // include <think> reasoning parts in the stream to the UI
-        // Surface the real failure to the UI instead of the AI SDK's default
-        // "An error occurred." Ollama returns a 500 when it can't load the model,
-        // which on this air-gapped target almost always means not enough free RAM.
-        getErrorMessage: (error) => {
-          const msg = (error && error.message) ? error.message : String(error)
-          if (/internal server error|statuscode 500|\b500\b|memory|failed to load/i.test(msg)) {
-            return `The model could not generate a response — most likely not enough free RAM to load it. Close other apps and try again. (${msg})`
-          }
-          return msg
-        },
-      })
-      res.on('finish', () => {
-        console.log(`[api] response stream complete (${res.statusCode})`)
-      })
-
-    } catch (err) {
-      console.error('[api] error:', err.message)
-      res.writeHead(500, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: err.message }))
-    }
+    // Real token streaming straight from Ollama (see streamChatResponse). The
+    // output is the AI SDK data-stream protocol, so useChat needs no changes.
+    const ac = new AbortController()
+    req.on('close', () => ac.abort())  // client stop() aborts the in-flight Ollama call
+    pipeDataStreamToResponse(res, {
+      // Surface the real failure to the UI instead of a generic message. Ollama
+      // returns a 500 when it can't load the model, which on this air-gapped
+      // target almost always means not enough free RAM.
+      onError: (error) => {
+        const msg = (error && error.message) ? error.message : String(error)
+        if (/internal server error|statuscode 500|\b500\b|memory|failed to load/i.test(msg)) {
+          return `The model could not generate a response — most likely not enough free RAM to load it. Close other apps and try again. (${msg})`
+        }
+        return msg
+      },
+      execute: async (writer) => {
+        try {
+          await streamChatResponse({ writer, systemPrompt, uiMessages: body.messages, signal: ac.signal })
+        } catch (e) {
+          if (ac.signal.aborted) return  // client stopped — end the stream quietly
+          console.error('[api] chat stream error:', e?.message, '| cause:', e?.cause?.message || e?.cause || '(none)')
+          throw e                        // real failure → onError emits it to the UI
+        }
+      },
+    })
+    res.on('finish', () => console.log(`[api] response stream complete (${res.statusCode})`))
     return
   }
 
@@ -704,8 +987,8 @@ const server = http.createServer(async (req, res) => {
     await ensureCurrentModel()
     try {
       const [tagsRes, psRes] = await Promise.all([
-        fetch('http://localhost:11434/api/tags'),
-        fetch('http://localhost:11434/api/ps').catch(() => null),
+        fetch(`${OLLAMA_BASE}/api/tags`),
+        fetch(`${OLLAMA_BASE}/api/ps`).catch(() => null),
       ])
       const data = await tagsRes.json()
       const psData = psRes ? await psRes.json().catch(() => ({ models: [] })) : { models: [] }
@@ -766,8 +1049,8 @@ const server = http.createServer(async (req, res) => {
     // Check if model exists in Ollama
     try {
       const [tagsRes, psRes] = await Promise.all([
-        fetch('http://localhost:11434/api/tags'),
-        fetch('http://localhost:11434/api/ps').catch(() => null),
+        fetch(`${OLLAMA_BASE}/api/tags`),
+        fetch(`${OLLAMA_BASE}/api/ps`).catch(() => null),
       ])
       const data = await tagsRes.json()
       const psData = psRes ? await psRes.json().catch(() => ({ models: [] })) : { models: [] }
@@ -802,7 +1085,7 @@ const server = http.createServer(async (req, res) => {
       const others = (psData.models || []).filter(m => m.name !== body.model)
       for (const m of others) {
         try {
-          await fetch('http://localhost:11434/api/generate', {
+          await fetch(`${OLLAMA_BASE}/api/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: m.name, prompt: '', keep_alive: 0 })
@@ -819,7 +1102,7 @@ const server = http.createServer(async (req, res) => {
       console.log(`[api] loading model: ${body.model}`)
       const loadStart = Date.now()
       try {
-        await fetch('http://localhost:11434/api/generate', {
+        await fetch(`${OLLAMA_BASE}/api/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: body.model, prompt: '', keep_alive: '5m', stream: false })
@@ -973,7 +1256,7 @@ async function warmUpModel() {
     // 1) Wait (up to ~60s) for Ollama's HTTP API to come up — spawned in parallel.
     let up = false
     for (let i = 0; i < 60 && !up; i++) {
-      try { up = (await fetch('http://localhost:11434/api/version')).ok } catch { /* not yet */ }
+      try { up = (await fetch(`${OLLAMA_BASE}/api/version`)).ok } catch { /* not yet */ }
       if (!up) await sleep(1000)
     }
     if (!up) { modelError = 'The Ollama service did not start.'; console.warn('[api] warm-up: Ollama did not come up'); return }
@@ -990,22 +1273,19 @@ async function warmUpModel() {
     // so the FIRST answer is fast too. Same numCtx (via ollamaModel) as chat, so no
     // model reload happens on the first real request.
     const t0 = Date.now()
-    // Tools in Ollama's format, matching what the chat path sends, so the prefilled
-    // system+tools prefix is the SAME token sequence the first real question uses
-    // and Ollama serves it from its prompt cache.
-    const ollamaTools = (AGENT.toolAllowlist || [])
-      .map(n => (AGENT.tools || []).find(t => t.name === n))
-      .filter(Boolean)
-      .map(t => ({ type: 'function', function: { name: t.name, description: t.description || '', parameters: t.parameters || { type: 'object', properties: {} } } }))
+    // Tools in Ollama's format, matching what the chat path sends (same builder),
+    // so the prefilled system+tools prefix is the SAME token sequence the first
+    // real question uses and Ollama serves it from its prompt cache.
+    const ollamaTools = buildOllamaTools()
     // Non-streaming /api/chat blocks until the model is loaded AND the prompt is
     // prefilled, and returns a real HTTP status we can check (keep_alive -1 keeps
     // it resident; same num_ctx as chat -> no reload on the first request).
-    const r = await fetch('http://localhost:11434/api/chat', {
+    const r = await fetch(`${OLLAMA_BASE}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model,
-        messages: [{ role: 'system', content: AGENT.system_prompt }, { role: 'user', content: 'hi' }],
+        messages: [{ role: 'system', content: currentSystemPrompt }, { role: 'user', content: 'hi' }],
         tools: ollamaTools.length ? ollamaTools : undefined,
         stream: false,
         keep_alive: -1,

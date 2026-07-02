@@ -52,7 +52,7 @@ export default function ChatPage() {
   const autoSearchRef = useRef(settings.autoSearch)
   useEffect(() => { autoSearchRef.current = settings.autoSearch }, [settings.autoSearch])
 
-  const { messages, input, handleInputChange, handleSubmit, status, error, stop } = useChat({
+  const { messages, setMessages, input, handleInputChange, handleSubmit, status, error, stop } = useChat({
     api: 'http://localhost:3001/chat',
     // Send the COMPACTED context to the model (summary + messages since the last
     // compaction). The UI keeps rendering the full `messages` untouched.
@@ -91,6 +91,14 @@ export default function ChatPage() {
       }
     } catch { /* leave context as-is on failure */ }
     setCompacting(false)
+  }
+
+  // Clear the conversation and start fresh. Also drops any compaction summary so
+  // the next turn starts from an empty context.
+  const clearHistory = () => {
+    setMessages([])
+    compactionRef.current = null
+    setCompaction(null)
   }
 
   const [docsOpen, setDocsOpen] = useState(false)
@@ -348,7 +356,7 @@ export default function ChatPage() {
 
       <LogsPanel />
       <DocumentsPanel open={docsOpen} onClose={() => setDocsOpen(false)} />
-      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} onSettingsChange={saveSettings} />
+      <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} onSettingsChange={saveSettings} onClearHistory={clearHistory} hasHistory={messages.length > 0} />
     </div>
   )
 }
