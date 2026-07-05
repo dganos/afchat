@@ -11,15 +11,20 @@ param(
   [string[]] $Assets  = @()
 )
 
-# Auto-discover the split model-zip parts when none were given explicitly.
+# Auto-discover the full bundle when no assets were given explicitly: the NSIS
+# installer plus every split model-zip part (the part count grows with the
+# bundled models; each part stays <2 GB per GitHub's limit).
 if (-not $Assets -or $Assets.Count -eq 0) {
-  $Assets = Get-ChildItem -Path $DistDir -Filter 'Aristo-Windows-models.zip.part*' -ErrorAction SilentlyContinue |
-            Sort-Object Name | Select-Object -ExpandProperty Name
+  $installer = Get-ChildItem -Path $DistDir -Filter 'Aristo-Setup-*.exe' -ErrorAction SilentlyContinue |
+               Sort-Object Name | Select-Object -ExpandProperty Name
+  $parts = Get-ChildItem -Path $DistDir -Filter 'Aristo-Windows-models.zip.part*' -ErrorAction SilentlyContinue |
+           Sort-Object Name | Select-Object -ExpandProperty Name
+  $Assets = @($installer) + @($parts) | Where-Object { $_ }
   if (-not $Assets -or $Assets.Count -eq 0) {
-    Write-Output "No model-zip parts (Aristo-Windows-models.zip.part*) found in $DistDir"
+    Write-Output "No installer or model-zip parts found in $DistDir"
     return
   }
-  Write-Output ("Discovered {0} model-zip part(s): {1}" -f $Assets.Count, ($Assets -join ', '))
+  Write-Output ("Discovered {0} asset(s): {1}" -f $Assets.Count, ($Assets -join ', '))
 }
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -93,4 +98,8 @@ foreach ($name in $Assets) {
 }
 
 Write-Output "=== final asset list ==="
-Get-Existing | ForEach-Object { "{0,-34} {1,5} MB  {2}" -f $_.name, [math]::Round($_.size/1MB), $_.state }
+# Use a foreach statement (reliable element enumeration) and cast size to a
+# scalar — piping the array to ForEach-Object could bind the whole array to $_.
+foreach ($a in @(Get-Existing)) {
+  "{0,-36} {1,6:N0} MB  {2}" -f $a.name, ([int64]$a.size / 1MB), $a.state
+}
