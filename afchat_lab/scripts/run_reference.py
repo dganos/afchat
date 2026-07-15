@@ -4,12 +4,12 @@ phrasing questions, the questions are fair (measure comprehension); if it also
 struggles, they're too oblique.
 
 Claude is driven agentically with read-only filesystem tools (Read/Glob/Grep)
-pointed at the corpus, mirroring the LM Studio candidates' list/read/search tools.
+pointed at the corpus, mirroring the local candidates' list/read/search tools.
 Answers are graded by the same judge (harness.judge). Writes a run-*.json in the
 standard schema so it shows up in the lab UI/leaderboard.
 
 Usage (from afchat_lab/, venv active):
-    .venv/bin/python scripts/run_reference.py --config config_124.yaml [--limit N]
+    .venv/bin/python scripts/run_reference.py --config config_124_long.yaml [--limit N]
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ async def answer_with_claude(question: str, corpus_dir: str, model: str, max_tur
 
 async def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--config", default="config_124.yaml")
+    p.add_argument("--config", default="config_124_long.yaml")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--model", default="claude-sonnet-4-6", help="reference candidate model")
     args = p.parse_args()

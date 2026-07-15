@@ -1,0 +1,6 @@
+{
+  "name": "qwen3-14b",
+  "description": "Lab candidate: qwen3:14b under the production gemma4-qa agent contract (prompt/tools/runtime inherited from the Aristo production package).",
+  "extends": "../../../packages/gemma4-qa",
+  "model": { "id": "qwen3:14b", "label": "qwen3-14b", "context_length": 16384, "think": false, "_comment": "16k ctx: at 32k only 29/41 layers fit the M1 Pro GPU and the load times out" }
+}

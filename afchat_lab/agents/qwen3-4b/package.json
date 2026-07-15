@@ -1,0 +1,6 @@
+{
+  "name": "qwen3-4b",
+  "description": "Lab candidate: qwen3:4b under the production gemma4-qa agent contract (prompt/tools/runtime inherited from the Aristo production package).",
+  "extends": "../../../packages/gemma4-qa",
+  "model": { "id": "qwen3:4b", "label": "qwen3-4b", "context_length": 32768, "think": false }
+}

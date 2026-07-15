@@ -1,0 +1,26 @@
+# afchat_lab — "124 long corpus" 5Q smoke configuration
+# A deterministic 5-question subset of the full 50Q benchmark (evenly spaced,
+# see testset/questions_124_long_5.json). For fast smoke checks; same corpus,
+# agent, judge, and backend as the full run.
+
+paths:
+  corpus_dir: corpus_124
+  testset: testset/questions_124_long_5.json
+  results_dir: results_124_long_5
+
+# The AGENT comes entirely from the shared package (SAME AGENT as Aristo).
+package: ../packages/gemma4-qa
+
+# Runtime backend: Ollama, native /api/chat exactly as Aristo does.
+ollama:
+  base_url: http://localhost:11434
+  request_timeout_s: 600
+
+judge:
+  model: claude-sonnet-4-6
+  log_level: INFO
+
+models:
+  - id: gemma-4-e4b:latest
+    label: gemma-4-e4b            # PRODUCTION, Aristo's package
+  - package: agents/qwen3-14b

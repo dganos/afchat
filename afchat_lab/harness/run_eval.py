@@ -9,7 +9,6 @@ Usage (from afchat_lab/, with .venv active):
     python -m harness.run_eval                     # all models, all questions
     python -m harness.run_eval --limit 3           # first 3 questions (quick smoke)
     python -m harness.run_eval --models nemotron-4b,gemma-4-e2b
-    python -m harness.run_eval --no-manage         # don't load/unload models via `lms`
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ import argparse
 import asyncio
 import json
 import math
-import subprocess
 import sys
 import time
 from datetime import datetime
@@ -27,22 +25,20 @@ from pathlib import Path
 import yaml
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
-from openai import AsyncOpenAI
 
 from harness import judge as judging
 from harness.agent import (
-    AgentResult,
-    answer_question,
     answer_question_claude,
     answer_question_ollama,
     load_fs_server_params,
+    ollama_capabilities,
 )
 from harness.package import load_package, openai_tools
 
 LAB = Path(__file__).resolve().parent.parent
 
 
-_CONFIG_FILE = "config.yaml"
+_CONFIG_FILE = "config_124_long.yaml"
 
 
 def load_config() -> dict:
@@ -199,28 +195,6 @@ def _make_printer(run_log: "_RunLog | None" = None):
     return on_event
 
 
-def lms(*args: str) -> tuple[int, str]:
-    proc = subprocess.run(["lms", *args], capture_output=True, text=True)
-    return proc.returncode, (proc.stdout + proc.stderr).strip()
-
-
-def model_load(model_id: str, ctx: int, gpu: str | None = None) -> str | None:
-    # `gpu` is LM Studio's offload ratio ("off"/"max"/0..1). Big models that fit
-    # in RAM but OOM the Metal compute buffer on an 8 GB box need partial CPU
-    # offload to load *and* run — so it's a per-model override, not a global.
-    extra = ["--gpu", str(gpu)] if gpu is not None else []
-    code, out = lms("load", model_id, "--context-length", str(ctx), *extra, "--yes")
-    return None if code == 0 else out
-
-
-def model_unload(model_id: str) -> None:
-    lms("unload", model_id)
-
-
-def model_unload_all() -> None:
-    lms("unload", "--all")
-
-
 async def run(args: argparse.Namespace) -> None:
     cfg = load_config()
     paths = cfg["paths"]
@@ -233,9 +207,29 @@ async def run(args: argparse.Namespace) -> None:
         questions = representative_subset(questions, args.limit)
 
     models = cfg["models"]
+    # Per-model candidate packages (afchat_lab/agents/<label>/): an entry may be
+    # just `package: agents/qwen3-8b` — id/label/ctx/think come from that package,
+    # which EXTENDS the production package (same prompt/tools/runtime; see
+    # agents/README.md). Entries without `package` run the production agent.
+    for m in models:
+        if m.get("package"):
+            pm = load_package((LAB / m["package"]).resolve())
+            m["_pkg"] = pm
+            m.setdefault("id", pm.model["id"])
+            m.setdefault("label", pm.model.get("label", pm.model["id"]))
     if args.models:
-        wanted = {m.strip() for m in args.models.split(",")}
-        models = [m for m in models if m["label"] in wanted or m["id"] in wanted]
+        # Match config entries by label/id; anything else is an AD-HOC model (e.g.
+        # picked from the "downloaded" list in the web UI) — run it with defaults so
+        # model selection is not coupled to the config's models: list.
+        by_key = {k: m for m in models for k in (m["label"], m["id"])}
+        picked: list[dict] = []
+        for w in (m.strip() for m in args.models.split(",")):
+            if not w:
+                continue
+            m = by_key.get(w) or {"id": w, "label": w.split("/")[-1], "adhoc": True}
+            if m not in picked:
+                picked.append(m)
+        models = picked
     if not models:
         print("No models selected.", file=sys.stderr)
         return
@@ -246,7 +240,16 @@ async def run(args: argparse.Namespace) -> None:
     print(f"Agent package: {pkg.summary()}")
     pkg_tools = openai_tools(pkg)
     pkg_ctx = int(pkg.model.get("context_length", 8192))
-    _timeout = cfg.get("ollama", cfg.get("lmstudio", {})).get("request_timeout_s", 180)
+    _timeout = cfg.get("ollama", {}).get("request_timeout_s", 180)
+    # AGENT knobs come ONLY from the shared package — never from a lab config.
+    # The lab must behave exactly as Aristo will; a config that quietly changed
+    # max_tool_result_chars / num_predict / max_steps would make lab results stop
+    # predicting production. request_timeout_s is the lab's own HTTP client
+    # timeout (test environment, not agent behavior), so it stays config-level.
+    if cfg.get("runtime"):
+        sys.exit("Config error: 'runtime:' overrides are not allowed — agent knobs "
+                 "live in the shared package (SAME AGENT as Aristo). Edit "
+                 f"{cfg['package']}/package.json instead.")
     runtime = {**pkg.runtime, "request_timeout_s": _timeout}
 
     judge_model = cfg["judge"].get("model", "claude-sonnet-4-6")
@@ -260,30 +263,25 @@ async def run(args: argparse.Namespace) -> None:
         sys.exit(2)
     print("Preflight OK.")
 
-    # Runtime backend: Ollama (native /api/chat, like Aristo) or LM Studio (OpenAI /v1).
-    is_ollama = "ollama" in cfg
-    if is_ollama:
-        ocfg = cfg["ollama"]
-        ollama_base = ocfg.get("base_url", "http://localhost:11434")
-        num_ctx = pkg_ctx  # context window comes from the agent package
-        manage = False  # Ollama auto-loads on first request; no lms load/unload
-        ctx = num_ctx
-        client = None
-        print(f"Backend: Ollama @ {ollama_base}  (num_ctx={num_ctx})")
-    else:
-        ollama_base, num_ctx = None, None
-        manage = cfg["lmstudio"].get("manage_models", True) and not args.no_manage
-        ctx = pkg_ctx  # context window comes from the agent package
-        if manage:
-            print("Unloading any currently loaded models (clean slate) ...", flush=True)
-            model_unload_all()
-        client = AsyncOpenAI(
-            base_url=cfg["lmstudio"]["base_url"],
-            api_key=cfg["lmstudio"]["api_key"],
-            timeout=cfg["lmstudio"].get("request_timeout_s", 180),
-        )
+    # Runtime backend: Ollama, native /api/chat (like Aristo). The only backend.
+    if "ollama" not in cfg:
+        sys.exit("Config error: an 'ollama:' block is required — the lab runs on Ollama only.")
+    ollama_base = cfg["ollama"].get("base_url", "http://localhost:11434")
+    num_ctx = pkg_ctx  # context window comes from the agent package
+    print(f"Backend: Ollama @ {ollama_base}  (num_ctx={num_ctx})")
+    # Ad-hoc models carry no config knobs — apply the lab's uniform no-thinking
+    # policy from their declared capabilities, and flag tool-less ones up front.
+    for m in models:
+        if not m.get("adhoc") or m.get("provider") == "claude":
+            continue
+        caps = ollama_capabilities(ollama_base, m["id"])
+        if "thinking" in caps and m.get("think") is None:
+            m["think"] = False
+            print(f"  {m['label']}: thinking-capable → think=false (lab policy)")
+        if caps and "tools" not in caps:
+            print(f"  ! {m['label']}: no 'tools' capability — expect tool-call failures")
 
-    params = load_fs_server_params(paths["lmstudio_mcp_json"], paths["mcp_server_name"], corpus_dir)
+    params = load_fs_server_params(corpus_dir)
 
     cfg_paths = cfg["paths"]
     rdir = LAB / cfg_paths.get("results_dir", "results")
@@ -318,22 +316,20 @@ async def run(args: argparse.Namespace) -> None:
 
     async def eval_model(session, oai_tools, model):
         label, mid = model["label"], model["id"]
-        # Hosted reference candidate (Claude via Agent SDK): no lms load/unload, its
-        # own read-only tools instead of the LM Studio + MCP path.
+        # Hosted reference candidate (Claude via Agent SDK): its own read-only
+        # tools instead of the Ollama + MCP path.
         is_claude = model.get("provider") == "claude" or mid.startswith("claude")
+        # Per-model candidate package (or the production default). Everything the
+        # agent IS — prompt, tools, runtime, ctx, think — comes from this package.
+        mpkg = model.get("_pkg") or pkg
+        m_tools = openai_tools(mpkg) if model.get("_pkg") else oai_tools
+        m_runtime = {**mpkg.runtime, "request_timeout_s": _timeout}
+        m_ctx = int(mpkg.model.get("context_length", 8192))
+        m_think = model["think"] if "think" in model else mpkg.model.get("think")
         model_start = time.monotonic()
         print(f"\n=== {label}  ({mid}){'  [reference: Claude Agent SDK]' if is_claude else ''} ===")
-        load_err = None
-        if manage and not is_claude:
-            # Per-model overrides (optional): a smaller context and/or partial GPU
-            # offload for models that can't run at the global default on 8 GB.
-            mctx = int(model.get("context_length", ctx))
-            gpu = model.get("gpu")
-            desc = f"ctx={mctx}" + (f", gpu={gpu}" if gpu is not None else "")
-            print(f"  loading ({desc}) ...", flush=True)
-            load_err = model_load(mid, mctx, gpu)
-            if load_err:
-                print(f"  ! load failed: {load_err.splitlines()[-1][:160]}")
+        if model.get("_pkg"):
+            print(f"  agent package: {mpkg.summary()}")
         rows = []
         for q in questions:
             # Print the question first so progress is visible while the model thinks.
@@ -341,29 +337,21 @@ async def run(args: argparse.Namespace) -> None:
             print(f"  {q['id']} · {q['difficulty']} · {q['source_doc']}", flush=True)
             print(f"  Q: {_clip(q['question'], 300)}", flush=True)
             q_start = time.monotonic()
-            if load_err:
-                ar = AgentResult(error=load_err, finish="error")
-                print(f"  A: [error] {_clip(load_err, 200)}", flush=True)
-            elif is_claude:
+            if is_claude:
                 # Reference baseline: Claude via the Agent SDK with its own tools —
                 # not the packaged agent, so it keeps its own minimal prompt.
                 ar = await answer_question_claude(
-                    corpus_dir, q["question"], runtime,
+                    corpus_dir, q["question"], m_runtime,
                     on_event=_make_printer(run_log), model=mid,
                 )
                 if not ar.answer and ar.error:
                     print(f"  A: [error] {_clip(ar.error, 200)}", flush=True)
-            elif is_ollama:
-                ar = await answer_question_ollama(
-                    session, oai_tools, ollama_base, mid, corpus_dir, q["question"], runtime,
-                    on_event=_make_printer(run_log), system_prompt=pkg.system_prompt, num_ctx=num_ctx,
-                )
-                if not ar.answer and ar.error:
-                    print(f"  A: [error] {_clip(ar.error, 200)}", flush=True)
             else:
-                ar = await answer_question(
-                    session, oai_tools, client, mid, corpus_dir, q["question"], runtime,
-                    on_event=_make_printer(run_log), system_prompt=pkg.system_prompt,
+                ar = await answer_question_ollama(
+                    session, m_tools, ollama_base, mid, corpus_dir, q["question"], m_runtime,
+                    on_event=_make_printer(run_log), system_prompt=mpkg.system_prompt,
+                    num_ctx=int(model.get("context_length", m_ctx)),
+                    think=m_think,
                 )
                 if not ar.answer and ar.error:
                     print(f"  A: [error] {_clip(ar.error, 200)}", flush=True)
@@ -384,8 +372,6 @@ async def run(args: argparse.Namespace) -> None:
             print(f"  judge raw: {v.raw}")
             print(f"  {mark} {v.verdict.upper()}  (steps={ar.steps}, tools={len(ar.tool_calls)}, {q_elapsed}s)")
             print(f"  judge: score={v.score}  {v.rationale}", flush=True)
-        if manage and not is_claude:
-            model_unload(mid)
         duration_s = round(time.monotonic() - model_start)
         summary = summarize(rows, label, mid, duration_s)
         print(f"  -> {summary['pct']}% over {summary['n_scored']}Q  ({summary['correct']}✓ {summary['partial']}~ {summary['incorrect']}✗ {summary['model_errors']}💥 {summary['judge_errors']}⚖︎)  {duration_s}s")
@@ -440,8 +426,7 @@ def main() -> None:
     p.add_argument("--limit", type=int, default=0, help="evenly-spaced sample of N questions (representative smoke subset)")
     p.add_argument("--first", type=int, default=0, help="run the first N questions in order (q01..qN); overrides --limit")
     p.add_argument("--models", type=str, default="", help="comma-separated labels/ids to run")
-    p.add_argument("--no-manage", action="store_true", help="do not load/unload models via lms")
-    p.add_argument("--config", type=str, default="config.yaml", help="config file to use")
+    p.add_argument("--config", type=str, default="config_124_long.yaml", help="config file to use")
     args = p.parse_args()
     _CONFIG_FILE = args.config
     asyncio.run(run(args))

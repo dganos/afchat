@@ -13,8 +13,8 @@ Canonical format (read directly by both, no derived copies):
 
     pkg = load_package("../packages/gemma4-qa")
     tools = openai_tools(pkg)   # [{type:function, function:{name,description,parameters}}]
-    await answer_question(session, tools, client, pkg.model["id"], corpus_dir,
-                          question, pkg.runtime, system_prompt=pkg.system_prompt)
+    await answer_question_ollama(session, tools, base_url, pkg.model["id"], corpus_dir,
+                                 question, pkg.runtime, system_prompt=pkg.system_prompt)
 """
 
 from __future__ import annotations
@@ -48,26 +48,53 @@ class AgentPackage:
 
 
 def load_package(path: str | Path) -> AgentPackage:
-    """Load a package from its folder (or its package.json). Raises on missing keys."""
+    """Load a package from its folder (or its package.json). Raises on missing keys.
+
+    A package may declare `"extends": "<relative path to a base package>"` (one
+    level, no chains). This is how the lab's per-model candidate packages
+    (afchat_lab/agents/<label>/) stay glued to the PRODUCTION package in the
+    Aristo folder (packages/gemma4-qa): they carry only their model block and
+    inherit the system prompt, tool contracts, and runtime knobs from production
+    — so a production contract change automatically applies to every candidate,
+    and candidates can never silently drift.
+    """
     p = Path(path)
     pkg_json = p / "package.json" if p.is_dir() else p
     pkg_dir = pkg_json.parent
     d = json.loads(pkg_json.read_text())
 
-    missing = [k for k in ("name", "model", "tools", "system_prompt_file") if k not in d]
+    base: AgentPackage | None = None
+    if d.get("extends"):
+        base_path = (pkg_dir / d["extends"]).resolve()
+        base_d = json.loads((base_path / "package.json" if base_path.is_dir() else base_path).read_text())
+        if base_d.get("extends"):
+            raise ValueError(f"package {pkg_json}: extends chains are not allowed (base also extends)")
+        base = load_package(base_path)
+
+    model = d.get("model") or (base.model if base else None)
+    tools = d.get("tools") or (base.tools if base else None)
+    runtime = {**(base.runtime if base else {}), **d.get("runtime", {})}
+
+    missing = [k for k, v in (("name", d.get("name")), ("model", model), ("tools", tools)) if not v]
+    if not d.get("system_prompt_file") and base is None:
+        missing.append("system_prompt_file")
     if missing:
         raise ValueError(f"package {pkg_json} missing required keys: {missing}")
-    if "id" not in d["model"]:
+    if "id" not in model:
         raise ValueError(f"package {pkg_json}: model.id is required")
 
-    system_prompt = (pkg_dir / d["system_prompt_file"]).read_text().strip()
+    if d.get("system_prompt_file"):
+        system_prompt = (pkg_dir / d["system_prompt_file"]).read_text().strip()
+    else:
+        system_prompt = base.system_prompt
+
     return AgentPackage(
         name=d["name"],
-        version=int(d.get("version", 1)),
-        description=d.get("description", "").strip(),
-        model=d["model"],
-        runtime=d.get("runtime", {}),
-        tools=d["tools"],
+        version=int(d.get("version", base.version if base else 1)),
+        description=(d.get("description") or (base.description if base else "")).strip(),
+        model=model,
+        runtime=runtime,
+        tools=tools,
         system_prompt=system_prompt,
         dir=pkg_dir,
     )

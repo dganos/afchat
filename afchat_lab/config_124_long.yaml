@@ -1,0 +1,33 @@
+# afchat_lab — "124 long corpus" benchmark configuration
+# Goal: QA over the ENLARGED 32-document corpus_124 (the two real ינשוף manuals
+# plus 30 fictional squadron docs: aircraft data/limits, pilots roster, equipment,
+# emergency, mechanical, and behavioral orders). Stress test for document
+# SELECTION: the agent must first find the right file among 32 before answering.
+
+paths:
+  corpus_dir: corpus_124
+  testset: testset/questions_124_long_corpus.json
+  results_dir: results_124_long
+
+# The AGENT — model, system prompt, tool contracts, runtime knobs, and context
+# window — is defined entirely by this package, the single source of truth shared
+# with the Aristo app. This config only supplies the test ENVIRONMENT (corpus,
+# testset, judge, backend, and which models to run).
+package: ../packages/gemma4-qa
+
+# Runtime backend: Ollama, native /api/chat exactly as Aristo does.
+ollama:
+  base_url: http://localhost:11434
+  # 600s: table-heavy docs produce large tool results whose prefill can be slow
+  # on a 16 GB M1 Pro (see config_124.yaml).
+  request_timeout_s: 600
+
+judge:
+  model: claude-sonnet-4-6
+  log_level: INFO
+
+# The battle: production gemma vs the strongest local challenger.
+models:
+  - id: gemma-4-e4b:latest
+    label: gemma-4-e4b            # PRODUCTION, Aristo's package
+  - package: agents/qwen3-14b

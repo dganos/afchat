@@ -98,10 +98,6 @@
   .opt.on .sw::after{left:14px}
   input[type=number]{width:80px;background:#0b0e13;border:1px solid var(--line2);color:var(--txt);
     font-family:var(--mono);padding:8px 10px}
-  .preset-btn{font-family:var(--mono);font-size:11px;letter-spacing:.08em;padding:8px 11px;
-    background:transparent;border:1px solid var(--line2);color:var(--dim);cursor:pointer;transition:.15s}
-  .preset-btn:hover{color:var(--txt);border-color:var(--dim)}
-  .preset-btn.active{border-color:var(--amber);color:var(--amber)}
   .judgebox{font-family:var(--mono);font-size:12px;color:var(--dim);border:1px solid var(--violet);
     background:rgba(180,140,255,.07);padding:11px 13px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
   .judgebox b{color:var(--violet)}
@@ -264,7 +260,7 @@
   <header>
     <div class="brand">
       <h1>AFCHAT<b>_</b>LAB</h1>
-      <div class="sub">Document-QA Benchmark · LM Studio × MCP × Claude Judge</div>
+      <div class="sub">Document-QA Benchmark · Ollama × MCP × Claude Judge</div>
     </div>
     <div class="statswrap">
       <div class="mempill" id="mem" title="reading memory…">
@@ -306,15 +302,7 @@
             <label>Questions limit</label>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
               <input type="number" id="limit" min="0" value="0" />
-              <button class="preset-btn active" data-val="0">All</button>
-              <button class="preset-btn" data-val="10">10Q short</button>
-              <button class="preset-btn" data-val="5">5Q smoke</button>
-            </div>
-          </div>
-          <div class="field">
-            <label>Options</label>
-            <div class="opts">
-              <div class="opt on" id="opt-manage"><span class="sw"></span> Load/unload via lms</div>
+              <span class="note">0 = the whole set — pick the set size with the Benchmark buttons above ↗</span>
             </div>
           </div>
           <div class="runbtns">
@@ -373,9 +361,9 @@ const $ = s => document.querySelector(s);
 const el = (t,c,h)=>{const e=document.createElement(t); if(c)e.className=c; if(h!=null)e.innerHTML=h; return e;};
 const VMAP = {correct:'c', partial:'p', incorrect:'x'};
 let STATE=null, QCACHE=null, RUNCACHE={};
-let _activeConfig='config.yaml', _loadedCorpusConfig=null;
-const CFG_LABEL = {'config.yaml':'EN 🇪🇺','config_he.yaml':'HE 🇮🇱','config_124.yaml':'124 🦉'};
-const RTL_CONFIGS = new Set(['config_he.yaml','config_124.yaml']);
+let _activeConfig='config_124_long.yaml', _loadedCorpusConfig=null;
+const CFG_LABEL = {'config_124_long.yaml':'124 · 50Q 🦉','config_124_long_10.yaml':'124 · 10Q','config_124_long_5.yaml':'124 · 5Q'};
+const RTL_CONFIGS = new Set(['config_124_long.yaml','config_124_long_10.yaml','config_124_long_5.yaml']);
 const isHebrew = ()=> RTL_CONFIGS.has(_activeConfig);
 
 function toast(msg){const t=$('#toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2600);}
@@ -383,11 +371,11 @@ function toast(msg){const t=$('#toast'); t.textContent=msg; t.classList.add('sho
 async function loadState(){
   STATE = await (await fetch('/api/state')).json();
   renderStats(); renderModels(); renderRunSelectors();
-  $('#cfgtag').textContent = 'ctx '+STATE.lmstudio.context_length;
+  $('#cfgtag').textContent = 'ctx '+(STATE.backend.context_length||'—');
   if(STATE.judge && STATE.judge.model) $('#judgemodel').textContent = STATE.judge.model;
   // reflect active benchmark in subtitle
   const benchLabel = CFG_LABEL[_activeConfig]||_activeConfig;
-  $('.sub').textContent = `Document-QA Benchmark · ${benchLabel} · LM Studio × MCP × Claude Judge`;
+  $('.sub').textContent = `Document-QA Benchmark · ${benchLabel} · Ollama × MCP × Claude Judge`;
   // console panel title
   $('#consbench').textContent = benchLabel;
 }
@@ -396,7 +384,7 @@ function renderStats(){
   const s=$('#stats'); s.innerHTML='';
   const running = STATE.run_status==='running';
   const items=[
-    ['server', STATE.lmstudio.base_url.replace('http://',''), running?'run':'on'],
+    ['server', (STATE.backend.base_url||'?').replace('http://',''), running?'run':'on'],
     ['judge', STATE.judge.model, 'on'],
     ['testset', STATE.testset.count+' Q', 'on'],
     ['runs', STATE.runs.length, STATE.runs.length?'on':''],
@@ -409,44 +397,41 @@ function renderStats(){
 
 function renderModels(){
   const list=$('#modellist'); list.innerHTML='';
-  for(const m of STATE.models){
-    const r=el('div','mrow sel');
+  const addRow=(key,lbl,idTxt,sel)=>{
+    const r=el('div','mrow'+(sel?' sel':''));
     r.innerHTML=`<span class="box"><svg viewBox="0 0 10 10"><path d="M1 5l3 3 5-7" stroke="#000" stroke-width="1.6" fill="none"/></svg></span>
-      <span class="lbl">${m.label}</span><span class="id">${m.id}</span>`;
-    r.dataset.label=m.label;
+      <span class="lbl">${lbl}</span><span class="id">${idTxt}</span>`;
+    r.dataset.label=key;
     r.onclick=()=>{r.classList.toggle('sel'); updateHint();};
     list.appendChild(r);
+  };
+  for(const m of STATE.models) addRow(m.label, m.label, m.id, true);
+  // Every model already downloaded to the Ollama store, minus the config ones —
+  // selectable as ad-hoc candidates (the harness runs unknown ids with defaults).
+  const inCfg=new Set(STATE.models.map(m=>m.id));
+  const extra=(STATE.downloaded||[]).filter(d=>!inCfg.has(d.name));
+  if(extra.length){
+    const h=el('div',null,'downloaded — not in config');
+    h.style.cssText='font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:8px 0 1px';
+    list.appendChild(h);
+    for(const d of extra) addRow(d.name, d.name.split('/').pop(), d.size_gb+' GB', false);
   }
 }
 
-$('#opt-manage').onclick=()=>{$('#opt-manage').classList.toggle('on'); updateHint();};
-$('#limit').oninput=()=>{
-  document.querySelectorAll('.preset-btn').forEach(b=>b.classList.remove('active'));
-  const cur=+$('#limit').value;
-  const match=[...document.querySelectorAll('.preset-btn')].find(b=>+b.dataset.val===cur);
-  if(match) match.classList.add('active');
-  updateHint();
-};
-document.querySelectorAll('.preset-btn').forEach(b=>b.onclick=()=>{
-  $('#limit').value=b.dataset.val;
-  document.querySelectorAll('.preset-btn').forEach(x=>x.classList.remove('active'));
-  b.classList.add('active');
-  updateHint();
-});
+$('#limit').oninput=updateHint;
 
 function gatherCfg(){
   const models=[...document.querySelectorAll('.mrow.sel')].map(r=>r.dataset.label);
   return {
     models, limit:+$('#limit').value||0,
-    no_manage: !$('#opt-manage').classList.contains('on'),
   };
 }
 function updateHint(){
   const c=gatherCfg();
-  const n = c.limit||STATE.testset.count;
+  const n = c.limit ? Math.min(c.limit, STATE.testset.count) : STATE.testset.count;
+  const bench = CFG_LABEL[_activeConfig]||_activeConfig;
   $('#launchhint').textContent =
-    `${c.models.length} model(s) × ${n} question(s) = ${c.models.length*n} evals · judge=claude`
-    + (c.no_manage?' · no-manage':'');
+    `${bench} · ${c.models.length} model(s) × ${n} question(s) = ${c.models.length*n} evals · judge=claude`;
 }
 
 $('#launch').onclick=async()=>{

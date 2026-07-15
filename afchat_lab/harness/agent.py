@@ -1,10 +1,11 @@
-"""Candidate agent: a local LM Studio model answering questions over the corpus.
+"""Candidate agent: a local Ollama model answering questions over the corpus.
 
-The model is driven through LM Studio's OpenAI-compatible API. Its only way to see
-the documents is the filesystem MCP server that is ALREADY configured in LM Studio
-(`~/.lmstudio/mcp.json`). The harness reuses that exact server (no custom MCP) and
-acts as the MCP host: it lists the server's tools, advertises a read-only subset to
-the model as OpenAI tools, and executes each tool call the model makes.
+The model is driven through Ollama's native /api/chat — exactly as Aristo drives it.
+Its only way to see the documents is the filesystem MCP server
+(`@modelcontextprotocol/server-filesystem`) that the harness launches pointed at the
+corpus. The harness acts as the MCP host: it lists the server's tools, advertises a
+read-only subset to the model as function tools, and executes each tool call the
+model makes.
 
 This mirrors real "QA over documents": the model must navigate and read files itself.
 """
@@ -13,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import urllib.request
 from dataclasses import dataclass, field
@@ -27,7 +27,7 @@ from mcp import ClientSession, StdioServerParameters
 
 
 # ── Content search (grep) ──────────────────────────────────────────────────────
-# The LM Studio filesystem MCP server's `search_files` matches file/dir NAMES
+# The filesystem MCP server's `search_files` matches file/dir NAMES
 # (a path glob), NOT file contents — so the candidates have no way to locate a
 # fact without reading whole files (which then overflow the context). The harness
 # is the MCP host, so it implements its own content search and dispatches it
@@ -47,12 +47,20 @@ def _strip_marks(s: str) -> str:
     return _MARKS_RE.sub("", s)
 
 
+_BAD_PATH_HINT = (
+    "Omit 'path' to search ALL documents, or pass exact filename(s) shown by "
+    "list_directory."
+)
+
+
 def _scan_roots(base: Path, path) -> "list[Path] | str":
     """Resolve the path arg to the files/dirs to scan, sandboxed to base.
 
     `path` may be None/"" (whole corpus), a single string, or a LIST of paths
     (small models sometimes pass an array). Returns an error string if any path
-    escapes the corpus.
+    escapes the corpus, contains a glob, or doesn't exist — a silent empty scan
+    would read exactly like "the fact is not in the documents" (observed: gemma
+    passing path=['*'] and then refusing to answer).
     """
     if not path:
         return sorted(base.rglob("*"))
@@ -62,12 +70,16 @@ def _scan_roots(base: Path, path) -> "list[Path] | str":
     for p in paths:
         if not p:
             continue
+        if any(ch in str(p) for ch in "*?"):
+            return f"[tool error] path '{p}' is a glob, not a filename. {_BAD_PATH_HINT}"
         pp = Path(str(p))
         target = (pp if pp.is_absolute() else base / pp).resolve()
         try:
             target.relative_to(base)
         except ValueError:
             return f"[tool error] path not within the corpus: {p}"
+        if not target.exists():
+            return f"[tool error] path '{p}' does not match any document. {_BAD_PATH_HINT}"
         for f in ([target] if target.is_file() else sorted(target.rglob("*"))):
             if f not in seen:
                 seen.add(f)
@@ -75,8 +87,54 @@ def _scan_roots(base: Path, path) -> "list[Path] | str":
     return roots
 
 
+# A markdown heading line ("#"–"######" + space) — used for the block breadcrumb.
+_HEADING_RE = re.compile(r"#{1,6}\s")
+
+
+def _block_indices(lines: list[str], i: int, cap: int = 40) -> list[int]:
+    """The line indices of the structural block enclosing match line i.
+
+    The unit of meaning around a fact is its whole STRUCTURE, not N lines: a value
+    can sit in any row of a table whose header carried the matched keyword (or
+    vice versa — a matched bottom row is meaningless without its header), and a
+    statement can need its whole paragraph. So: if line i is part of a markdown
+    table, the block is the entire contiguous table; otherwise it is the enclosing
+    paragraph (contiguous non-blank lines). The nearest preceding heading (up to
+    60 lines back) is prepended as a breadcrumb so the model knows which section
+    the block belongs to. Blocks longer than cap are windowed around the match —
+    for tables the 2 header lines are always kept.
+    """
+    if lines[i].lstrip().startswith("|"):
+        s = i
+        while s > 0 and lines[s - 1].lstrip().startswith("|"):
+            s -= 1
+        e = i
+        while e + 1 < len(lines) and lines[e + 1].lstrip().startswith("|"):
+            e += 1
+        idx = list(range(s, e + 1))
+        if len(idx) > cap:
+            ws = max(s + 2, i - 3)
+            idx = [s, s + 1] + list(range(ws, min(e, ws + cap - 3) + 1))
+    else:
+        s = i
+        while s > 0 and lines[s - 1].strip():
+            s -= 1
+        e = i
+        while e + 1 < len(lines) and lines[e + 1].strip():
+            e += 1
+        if e - s + 1 > cap:
+            s = max(s, i - cap // 2)
+            e = min(e, s + cap - 1)
+        idx = list(range(s, e + 1))
+    for j in range(idx[0] - 1, max(-1, idx[0] - 61), -1):
+        if _HEADING_RE.match(lines[j].lstrip()):
+            idx.insert(0, j)
+            break
+    return idx
+
+
 def _grep_corpus(
-    corpus_dir: str, pattern: str, path=None, context: int = 0,
+    corpus_dir: str, pattern: str, path=None, context: "int | None" = None,
     max_matches: int = 40, line_cap: int = 300,
 ) -> str:
     """Case-insensitive substring search over the corpus' text files.
@@ -84,13 +142,25 @@ def _grep_corpus(
     Returns "rel/path:lineno: <line>" for each match (lines clipped to line_cap),
     capped at max_matches. With context=N, also returns the N lines AFTER each
     match (grep -A style) so a whole section can be pulled by searching for its
-    heading. Forgiving of two common model mistakes: an "A OR B" pattern matches
-    a line containing ANY alternative, and `path` may be a string or a list.
-    Sandboxed to corpus_dir.
+    heading. When the model OMITS context, each match is expanded to its whole
+    enclosing STRUCTURE — the entire table or paragraph plus the nearest section
+    heading (see _block_indices) — because facts often sit in table rows that
+    don't repeat the matched header/label keyword; overlapping matches collapse
+    into one block. An explicit context=0 is honored (compact listing, e.g. a
+    "## " heading catalog). Forgiving of two common model mistakes: an "A OR B"
+    pattern matches a line containing ANY alternative, and `path` may be a
+    string or a list. Sandboxed to corpus_dir.
+
+    Breadth × depth budget: a WIDE search (more than 3 files in scope) is a
+    locator, not a reader — at most 3 blocks per file (with a "+N more" pointer),
+    files ordered by match count instead of alphabetically (so a hit in the last
+    file can't be shadowed by early files under the result cap), and explicit
+    context clamped to 10. Deep reading requires narrowing with `path`.
     """
     if not pattern:
         return "[tool error] search_content needs a non-empty 'pattern'."
-    context = max(0, min(int(context or 0), 60))
+    smart = context is None
+    context = 0 if smart else max(0, min(int(context or 0), 60))
     base = Path(corpus_dir).resolve()
 
     roots = _scan_roots(base, path)
@@ -109,51 +179,102 @@ def _grep_corpus(
         s = s.strip()
         return s if len(s) <= line_cap else s[:line_cap] + "…"
 
-    blocks: list[str] = []
-    for f in roots:
-        if not f.is_file():
-            continue
-        try:
-            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
-        except Exception:  # noqa: BLE001
-            continue
-        rel = f.relative_to(base).as_posix()
-        for i, line in enumerate(lines):  # 0-based
-            low = _strip_marks(line.lower())
-            if any(n in low for n in needles):
-                end = min(len(lines), i + 1 + context)
-                blocks.append("\n".join(f"{rel}:{j + 1}: {clip(lines[j])}" for j in range(i, end)))
-                if len(blocks) >= max_matches:
-                    sep = "\n\n" if context else "\n"
-                    return sep.join(blocks) + (
-                        f"\n\n[showing the first {max_matches} matches; refine the pattern for fewer]"
-                    )
-    if not blocks:
+    files = [f for f in roots if f.is_file()]
+    wide = len(files) > 3
+    # The "## " table-of-contents idiom is exempt from wide budgeting: heading
+    # lines are one-liners, and a capped catalog defeats its whole purpose.
+    toc = all(set(n) == {"#"} for n in needles)
+    per_file_cap = 3 if (wide and not toc) else max_matches
+    if wide and not toc:
+        context = min(context, 10)
+        # A wide result must FIT the tool-result cap as whole blocks: 12 blocks of
+        # the best-matching files beat 40 blocks chopped mid-block at the char cap.
+        max_matches = min(max_matches, 12)
+
+    sep = "\n\n" if (smart or context) else "\n"
+
+    def scan(active: list[str]) -> list[tuple[int, list[str]]]:
+        per_file: list[tuple[int, list[str]]] = []  # (match_count, blocks) per file
+        for f in files:
+            try:
+                lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:  # noqa: BLE001
+                continue
+            rel = f.relative_to(base).as_posix()
+            fblocks: list[str] = []
+            extra = 0  # matching lines beyond this file's block budget
+            last_end = -1  # last line already emitted for this file (smart mode dedupe)
+            for i, line in enumerate(lines):  # 0-based
+                low = _strip_marks(line.lower())
+                if not any(n in low for n in active):
+                    continue
+                if smart and i <= last_end:
+                    continue  # already inside the previous block
+                if len(fblocks) >= per_file_cap:
+                    extra += 1
+                    continue
+                if smart:
+                    idx = _block_indices(lines, i)
+                    last_end = idx[-1]
+                else:
+                    idx = list(range(i, min(len(lines), i + 1 + context)))
+                fblocks.append("\n".join(f"{rel}:{j + 1}: {clip(lines[j])}" for j in idx))
+            if not fblocks:
+                continue
+            if extra:
+                fblocks[-1] += (
+                    f'\n[+{extra} more matching lines in {rel} — search with path="{rel}" to see them]'
+                )
+            per_file.append((len(fblocks) + extra, fblocks))
+        return per_file
+
+    note = ""
+    per_file = scan(needles)
+    if not per_file and any(" " in n for n in needles):
+        # A multi-word phrase almost never matches as a literal substring (models
+        # search whole sentences); relax to individual words rather than return a
+        # false "not in the documents".
+        words = list(dict.fromkeys(w for n in needles for w in n.split() if len(w) >= 2))
+        if words:
+            per_file = scan(words)
+            note = ("[no lines matched the exact phrase; showing lines matching its "
+                    "individual words instead]\n\n")
+    if not per_file:
         shown = " / ".join(f'"{n}"' for n in needles)
         return f"No lines containing {shown} were found in the documents."
-    sep = "\n\n" if context else "\n"
-    return sep.join(blocks)
+    # Most-matching files first: relevance order, never alphabetical order.
+    per_file.sort(key=lambda t: -t[0])
+    blocks = [b for _, fblocks in per_file for b in fblocks]
+    # Emit whole blocks up to a LINE budget (fits the tool-result char cap), so a
+    # too-broad search ends with an explicit "+N more" instead of a mid-block chop
+    # that silently hides every later match.
+    out: list[str] = []
+    used = 0
+    for b in blocks:
+        n_lines = b.count("\n") + 1
+        if out and (used + n_lines > 110 or len(out) >= max_matches):
+            break
+        out.append(b)
+        used += n_lines
+    text = note + sep.join(out)
+    if len(out) < len(blocks):
+        text += (
+            f"\n\n[showing {len(out)} of {len(blocks)} matches; refine the pattern "
+            f"or narrow with 'path' to see the rest]"
+        )
+    return text
 
 
-def load_fs_server_params(mcp_json_path: str, server_name: str, corpus_dir: str) -> StdioServerParameters:
-    """Build StdioServerParameters by reusing the LM Studio filesystem MCP definition.
+def load_fs_server_params(corpus_dir: str) -> StdioServerParameters:
+    """Build StdioServerParameters for the filesystem MCP server.
 
-    We take the command/args from the user's mcp.json and repoint the allowed
-    directory at our corpus, so the candidate is sandboxed to the test documents.
+    The server's allowed directory is the corpus, so the candidate is sandboxed
+    to the test documents.
     """
     corpus_dir = str(Path(corpus_dir).resolve())
-    path = Path(os.path.expanduser(mcp_json_path))
-    command, args = "npx", ["-y", "@modelcontextprotocol/server-filesystem"]
-    if path.exists():
-        cfg = json.loads(path.read_text())
-        servers = cfg.get("mcpServers", {})
-        spec = servers.get(server_name)
-        if spec and spec.get("command"):
-            command = spec["command"]
-            # Drop any directory arguments from the original config; we supply our own.
-            base = [a for a in spec.get("args", []) if not a.startswith("/")]
-            args = base
-    return StdioServerParameters(command=command, args=[*args, corpus_dir])
+    return StdioServerParameters(
+        command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", corpus_dir]
+    )
 
 
 @dataclass
@@ -172,8 +293,25 @@ async def _dispatch_tool(
         if name == CONTENT_SEARCH_NAME:
             # Harness-implemented content search — never forwarded to the MCP server.
             out = _grep_corpus(
-                corpus_dir or ".", args.get("pattern", ""), args.get("path"), args.get("context", 0)
+                corpus_dir or ".", args.get("pattern", ""), args.get("path"), args.get("context")
             )
+        elif name == "list_directory" and corpus_dir:
+            # Normalize the path before forwarding: models pass ".", "./corpus_124",
+            # or other guesses; the MCP server errors on those, and a model that
+            # never gets a file listing concludes "there are no documents"
+            # (observed). Any path that doesn't resolve to a real directory under
+            # the corpus falls back to the corpus root — mirroring Aristo.
+            base = Path(corpus_dir).resolve()
+            p = str(args.get("path") or "").strip()
+            target = (Path(p) if Path(p).is_absolute() else base / p).resolve() if p else base
+            try:
+                target.relative_to(base)
+            except ValueError:
+                target = base
+            if not target.is_dir():
+                target = base
+            res = await session.call_tool(name, {**args, "path": str(target)})
+            out = "\n".join(getattr(b, "text", None) or str(b) for b in res.content)
         else:
             res = await session.call_tool(name, args)
             parts = []
@@ -188,19 +326,19 @@ async def _dispatch_tool(
         # answer span was dropped, so it wrongly concludes the info is missing.
         full = len(out)
         out = out[:cap] + (
-            f"\n\n[TRUNCATED: showed the first {cap} of {full} characters; the rest of "
-            f"this file was NOT shown. The answer may be in the unshown part — call "
-            f"search_files with a keyword from the question (a number, unit, term, or "
-            f"country) to locate the passage, then read around it.]"
+            f"\n\n[TRUNCATED: showed the first {cap} of {full} characters; the rest "
+            f"was NOT shown. The answer may be in the unshown part — call "
+            f"search_content with a keyword from the question (a number, unit, or "
+            f"term) to locate the passage, then read around it.]"
         )
     return out
 
 
-# Some local models (notably gemma via LM Studio) sometimes emit a tool call as
-# plain TEXT in their chat-template format instead of through the API's structured
-# tool_calls channel — most often on a turn where no tools were advertised, but it
-# can leak mid-loop too. Such text is NOT an answer and must never be shown or
-# scored as one; we detect it and convert it back into a real tool call.
+# Some local models (notably gemma) sometimes emit a tool call as plain TEXT in
+# their chat-template format instead of through the API's structured tool_calls
+# channel — most often on a turn where no tools were advertised, but it can leak
+# mid-loop too. Such text is NOT an answer and must never be shown or scored as
+# one; we detect it and convert it back into a real tool call.
 #
 # Observed gemma form:
 #   <|tool_call>call:search_files{path:<|"|>foo.md<|"|>,keyword:<|"|>length<|"|>}<tool_call|>
@@ -254,231 +392,9 @@ def parse_text_tool_calls(content: str) -> tuple[str, list[dict]]:
     return cleaned.strip(), calls
 
 
-async def _stream_step(client, model, messages, tools, temperature, emit):
-    """One streamed chat completion. Emits content tokens live; returns (content, tool_calls)."""
-    kwargs = dict(model=model, messages=messages, temperature=temperature, stream=True)
-    if tools is not None:
-        kwargs.update(tools=tools, tool_choice="auto")
-    stream = await client.chat.completions.create(**kwargs)
-    content = ""
-    tcs: dict[int, dict] = {}
-    async for chunk in stream:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        # Reasoning models (e.g. *-thinking) stream their chain-of-thought in a
-        # separate field; surface it so they don't look frozen while thinking.
-        rc = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
-        if rc:
-            emit("reasoning", rc)
-        if getattr(delta, "content", None):
-            content += delta.content
-            emit("token", delta.content)
-        for tc in getattr(delta, "tool_calls", None) or []:
-            slot = tcs.setdefault(tc.index, {"id": "", "name": "", "args": ""})
-            if tc.id:
-                slot["id"] = tc.id
-            fn = getattr(tc, "function", None)
-            if fn and fn.name:
-                slot["name"] = fn.name
-            if fn and fn.arguments:
-                slot["args"] += fn.arguments
-    tool_calls = [tcs[i] for i in sorted(tcs)]
-    if not tool_calls:
-        # The API gave no structured tool calls — but the model may have emitted one
-        # as text (template leakage). Recover it as a real call so it is never
-        # mistaken for the final answer.
-        content, leaked = parse_text_tool_calls(content)
-        if leaked:
-            tool_calls = leaked
-    return content, tool_calls
-
-
-# LM Studio is flaky when not pinned: a request can fail mid-run with "Model
-# unloaded" (the server auto-unloaded the model) or an HTTP 5xx Internal Server
-# Error (reload / memory pressure). These are transient — the next request makes
-# LM Studio JIT-reload the model — so they should be retried, not scored as 0.
-# A 400 / bad-request / context-length error is NOT transient and is re-raised.
-def _is_retryable(e: Exception) -> bool:
-    msg = str(e).lower()
-    if any(n in msg for n in ("bad request", " 400", "context length", "tokens to keep",
-                              "invalid request", "not found", " 404", "unsupported")):
-        return False
-    return any(m in msg for m in (
-        "model unloaded", "unloaded", "internal server error", "service unavailable",
-        "overloaded", "connection", "timeout", "timed out", "reset", " 500", " 502", " 503", " 504",
-    )) or type(e).__name__.lower() in (
-        "apiconnectionerror", "apitimeouterror", "internalservererror", "apierror",
-    )
-
-
-async def _stream_step_retry(client, model, messages, tools, temperature, emit, attempts: int = 4):
-    """_stream_step with retry on transient LM Studio errors (Model unloaded / 5xx)."""
-    last: Exception | None = None
-    for k in range(attempts):
-        try:
-            return await _stream_step(client, model, messages, tools, temperature, emit)
-        except Exception as e:  # noqa: BLE001
-            last = e
-            if not _is_retryable(e) or k == attempts - 1:
-                raise
-            emit("retry", str(e)[:120], k + 1)
-            await asyncio.sleep(5 * (k + 1))  # give LM Studio time to reload the model
-    raise last  # unreachable, but keeps type-checkers happy
-
-
-def _append_tool_turn(messages: list[dict], content: str, tool_calls: list[dict]) -> None:
-    """Record the assistant turn (text + the tool calls it requested).
-
-    Arguments are normalised to "{}" when blank: a model that emits a no-arg call
-    (e.g. search_content()) yields arguments="", and LM Studio's gemma template
-    returns HTTP 500 on EVERY subsequent request once such a message is in history
-    — an unrecoverable poison pill. "{}" is valid and lets the run continue.
-    """
-    messages.append(
-        {
-            "role": "assistant",
-            "content": content or "",
-            "tool_calls": [
-                {"id": t["id"] or f"call_{i}", "type": "function",
-                 "function": {"name": t["name"], "arguments": (t["args"] or "").strip() or "{}"}}
-                for i, t in enumerate(tool_calls)
-            ],
-        }
-    )
-
-
-async def _run_tool_calls(
-    session: ClientSession, tool_calls: list[dict], messages: list[dict],
-    cap: int, result: "AgentResult", emit, corpus_dir: str | None = None,
-) -> None:
-    """Execute each tool call and append its result as a tool message."""
-    for i, t in enumerate(tool_calls):
-        try:
-            args = json.loads(t["args"] or "{}")
-        except json.JSONDecodeError:
-            args = {}
-        emit("tool", t["name"], args)
-        output = await _dispatch_tool(session, t["name"], args, cap, corpus_dir)
-        result.tool_calls.append({"name": t["name"], "args": args, "chars": len(output)})
-        emit("tool_result", t["name"], len(output))
-        messages.append({"role": "tool", "tool_call_id": t["id"] or f"call_{i}", "content": output})
-
-
-async def _force_final_answer(
-    client, model: str, messages: list[dict], temperature: float, result: "AgentResult", emit,
-    session: ClientSession, oai_tools: list[dict], cap: int, corpus_dir: str | None = None,
-) -> None:
-    """Out of steps: ask for a final answer.
-
-    A model that still hasn't found the fact will often try to call a tool here
-    instead of answering. If we forbid tools outright, that intent is wasted (and
-    some models leak the call as text, which parse_text_tool_calls then strips,
-    leaving an EMPTY answer — no feedback to the user). So we keep tools available
-    and, if the model insists on a tool, execute it and re-ask — giving it the data
-    to actually answer. After a small budget we make a final no-tools pass so the
-    model is forced to commit to plain text.
-    """
-    for attempt in range(2):
-        messages.append({
-            "role": "user",
-            "content": "Based only on the documents you have read, give your final answer now.",
-        })
-        emit("speak_start", "final")
-        # Last pass: forbid tools so the model must answer in plain text.
-        tools = None if attempt == 1 else oai_tools
-        try:
-            content, tool_calls = await _stream_step_retry(client, model, messages, tools, temperature, emit)
-        except Exception as e:  # noqa: BLE001
-            result.error = f"final answer error: {e}"
-            result.finish = "error"
-            return
-        emit("speak_end")
-        if content.strip():
-            result.answer = content.strip()
-            result.finish = "max_steps"
-            return
-        if tool_calls:
-            # The model wants data, not to answer yet — honour it once, then re-ask.
-            _append_tool_turn(messages, content, tool_calls)
-            await _run_tool_calls(session, tool_calls, messages, cap, result, emit, corpus_dir)
-            continue
-        break
-    result.answer = content.strip()
-    result.finish = "max_steps"
-
-
-async def answer_question(
-    session: ClientSession,
-    oai_tools: list[dict],
-    client,
-    model: str,
-    corpus_dir: str,
-    question: str,
-    cfg: dict,
-    on_event=None,
-    system_prompt: str | None = None,
-) -> AgentResult:
-    """Run the tool-using loop for a single question, streaming progress via on_event.
-
-    system_prompt and the tool set come from the agent package (the caller loads
-    it via harness.package and passes them in).
-
-    on_event(kind, *args) is called with:
-      ("speak_start", step)         model is about to generate text
-      ("token", text)               a streamed content token
-      ("speak_end",)                end of a generation
-      ("tool", name, args)          the model invoked a tool
-      ("tool_result", name, chars)  tool returned this many chars
-    """
-    def emit(*a):
-        if on_event:
-            on_event(*a)
-
-    corpus_dir = str(Path(corpus_dir).resolve())
-    cap = int(cfg.get("max_tool_result_chars", 6000))
-    max_steps = int(cfg.get("max_steps", 8))
-    temperature = float(cfg.get("temperature", 0))
-
-    # The full tool set (incl. search_content) is supplied by the caller, built from
-    # the agent package's tool contracts. This module only IMPLEMENTS them.
-    if not system_prompt:
-        raise ValueError("system_prompt is required (provided by the agent package)")
-    tools = list(oai_tools)
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Allowed corpus directory: {corpus_dir}\n\nQuestion: {question}"},
-    ]
-    result = AgentResult()
-
-    for step in range(max_steps):
-        result.steps = step + 1
-        emit("speak_start", step)
-        try:
-            content, tool_calls = await _stream_step_retry(client, model, messages, tools, temperature, emit)
-        except Exception as e:  # noqa: BLE001
-            result.error = f"chat.completions error: {e}"
-            result.finish = "error"
-            return result
-        emit("speak_end")
-
-        if not tool_calls:
-            result.answer = content.strip()
-            result.finish = "answered"
-            return result
-
-        # Record the assistant turn (with its tool calls) then execute each call.
-        _append_tool_turn(messages, content, tool_calls)
-        await _run_tool_calls(session, tool_calls, messages, cap, result, emit, corpus_dir)
-
-    await _force_final_answer(client, model, messages, temperature, result, emit, session, tools, cap, corpus_dir)
-    return result
-
-
 # ── Reference candidate: Claude via the Agent SDK ──────────────────────────────
 # Lets a hosted model (Claude) be benchmarked as a candidate alongside the local
-# LM Studio models — same question set, same judge, same logs. Claude navigates
+# Ollama models — same question set, same judge, same logs. Claude navigates
 # the corpus with its own read-only tools (Read/Glob/Grep), mirroring the local
 # candidates' list/read/search tools.
 
@@ -547,21 +463,66 @@ async def answer_question_claude(
             return result
 
 
-# ── Candidate: local model via Ollama's native /api/chat ───────────────────────
-# Mirrors the LM Studio path but talks to Ollama EXACTLY as Aristo does: the native
-# /api/chat endpoint (NOT the OpenAI /v1 shim, which doesn't route custom gemma
-# renderers and ignores num_ctx), tools as OpenAI-style function specs, the context
-# window via options.num_ctx. Non-streaming (like Aristo's simulateStreaming) so
-# structured tool_calls come back reliably. The filesystem tools still come from the
-# same MCP server; only the chat backend differs.
+# A "not found in the documents" style answer, in the lab's two languages. Used
+# by the pointer nudge below — heuristic on purpose, only ever triggers ONE extra
+# clarifying turn, never changes scoring.
+_REFUSAL_MARKS = (
+    "לא נמצא", "לא נמצאו", "אינו מופיע", "אינם מופיעים", "אין מידע", "אינו נמצא",
+    "not found", "no information", "not available", "does not appear", "couldn't find",
+)
+# Markers _grep_corpus puts on results it had to cut — an unfollowed pointer means
+# the model concluded "missing" without looking where the tool told it to look.
+_POINTER_MARKS = ("more matching lines in", "refine the pattern or narrow with 'path'")
 
-def _ollama_chat(base_url: str, model: str, messages: list, tools, num_ctx, temperature: float, timeout: int) -> dict:
+
+def _is_refusal(text: str) -> bool:
+    low = (text or "").lower()
+    return any(m in low for m in _REFUSAL_MARKS)
+
+
+# ── Candidate: local model via Ollama's native /api/chat ───────────────────────
+# Talks to Ollama EXACTLY as Aristo does: the native /api/chat endpoint (NOT the
+# OpenAI /v1 shim, which doesn't route custom gemma renderers and ignores num_ctx),
+# tools as OpenAI-style function specs, the context window via options.num_ctx.
+# Non-streaming (like Aristo's simulateStreaming) so structured tool_calls come
+# back reliably. The filesystem tools come from the MCP server.
+
+def ollama_capabilities(base_url: str, model: str) -> list[str]:
+    """The model's declared capabilities per /api/show (e.g. ["tools", "thinking"]).
+
+    Used for ad-hoc models (not in the config): thinking-capable ones get the lab's
+    uniform think=false policy, tool-less ones get a loud warning. Returns [] if the
+    lookup fails — callers must treat that as "unknown", not "no capabilities".
+    """
+    try:
+        req = urllib.request.Request(
+            base_url.rstrip("/") + "/api/show",
+            data=json.dumps({"model": model}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read()).get("capabilities", []) or []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _ollama_chat(base_url: str, model: str, messages: list, tools, num_ctx, temperature: float, timeout: int, think: "bool | None" = None, num_predict: int = 0) -> dict:
     payload = {"model": model, "messages": messages, "stream": False,
                "options": {"temperature": temperature}}
     if num_ctx:
         payload["options"]["num_ctx"] = int(num_ctx)
+    if num_predict:
+        # Bound generation so a runaway/repetition loop can't burn a whole
+        # request_timeout_s. Tool-call turns are ~60 tokens; answers are short.
+        payload["options"]["num_predict"] = int(num_predict)
     if tools:
         payload["tools"] = tools
+    # Thinking models (gemma-4, qwen3) sometimes emit their thinking block and then
+    # STOP without producing the tool call or any content — the turn is lost and the
+    # question scores 0. think=false (per-model config knob) suppresses the thinking
+    # channel. Only send it when explicitly set: non-thinking models reject the field.
+    if think is not None:
+        payload["think"] = bool(think)
     req = urllib.request.Request(
         base_url.rstrip("/") + "/api/chat",
         data=json.dumps(payload).encode(),
@@ -569,6 +530,37 @@ def _ollama_chat(base_url: str, model: str, messages: list, tools, num_ctx, temp
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
+
+
+def _ollama_transient(e: Exception) -> bool:
+    """Transient Ollama failures worth retrying: timeouts, connection drops, 5xx.
+
+    NOT transient: HTTP 4xx (bad request / unsupported field / model not found).
+    A retry after a timeout is cheap — Ollama keeps the processed prompt prefix
+    cached, so the second attempt resumes mostly warm instead of re-prefilling.
+    """
+    code = getattr(e, "code", None)  # urllib.error.HTTPError
+    if code is not None:
+        return int(code) >= 500
+    msg = str(e).lower()
+    return any(m in msg for m in (
+        "timed out", "timeout", "connection", "reset", "refused", "temporarily",
+    ))
+
+
+async def _ollama_chat_retry(emit, *args, attempts: int = 3, **kwargs) -> dict:
+    """_ollama_chat with retry on transient errors."""
+    last: Exception | None = None
+    for k in range(attempts):
+        try:
+            return await asyncio.to_thread(_ollama_chat, *args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if not _ollama_transient(e) or k == attempts - 1:
+                raise
+            emit("retry", str(e)[:120], k + 1)
+            await asyncio.sleep(5 * (k + 1))
+    raise last  # unreachable; keeps type-checkers happy
 
 
 async def answer_question_ollama(
@@ -582,6 +574,7 @@ async def answer_question_ollama(
     on_event=None,
     system_prompt: str | None = None,
     num_ctx: int | None = None,
+    think: "bool | None" = None,
 ) -> AgentResult:
     """Run the tool-using loop for one question against Ollama's native /api/chat."""
     def emit(*a):
@@ -593,6 +586,7 @@ async def answer_question_ollama(
     max_steps = int(cfg.get("max_steps", 8))
     temperature = float(cfg.get("temperature", 0))
     timeout = int(cfg.get("request_timeout_s", 180))
+    num_predict = int(cfg.get("num_predict", 0))
 
     if not system_prompt:
         raise ValueError("system_prompt is required (provided by the agent package)")
@@ -605,13 +599,16 @@ async def answer_question_ollama(
     result = AgentResult()
 
     async def chat(use_tools: bool) -> dict:
-        return await asyncio.to_thread(
-            _ollama_chat, base_url, model, messages,
-            tools if use_tools else None, num_ctx, temperature, timeout,
+        return await _ollama_chat_retry(
+            emit, base_url, model, messages,
+            tools if use_tools else None, num_ctx, temperature, timeout, think, num_predict,
         )
+
+    unfollowed_pointer = False  # last search result was cut and carried a "+N more" pointer
 
     async def run_calls(tool_calls: list) -> None:
         # Record the assistant turn (Ollama format) then execute each tool call.
+        nonlocal unfollowed_pointer
         messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
         for tc in tool_calls:
             fn = tc.get("function", {}) or {}
@@ -627,7 +624,10 @@ async def answer_question_ollama(
             result.tool_calls.append({"name": name, "args": args, "chars": len(output)})
             emit("tool_result", name, len(output))
             messages.append({"role": "tool", "content": output, "tool_name": name})
+            unfollowed_pointer = any(m in output for m in _POINTER_MARKS)
 
+    empty_retry = False
+    pointer_retry = False
     for step in range(max_steps):
         result.steps = step + 1
         emit("speak_start", step)
@@ -650,6 +650,25 @@ async def answer_question_ollama(
         emit("speak_end")
 
         if not tool_calls:
+            if not content and not empty_retry:
+                # An empty turn is not an answer (e.g. a stripped template leak or a
+                # dropped generation) — nudge once instead of scoring "" as a 0.
+                empty_retry = True
+                messages.append({"role": "user", "content":
+                                 "Your last reply was empty. Based only on the documents "
+                                 "you have read, give your final answer now."})
+                continue
+            if content and _is_refusal(content) and unfollowed_pointer and not pointer_retry:
+                # The model says "not found" while its LAST search result explicitly
+                # said more matches exist in a named file. Push it to look there
+                # once before accepting the refusal.
+                pointer_retry = True
+                messages.append({"role": "user", "content":
+                                 "Your last search result was CUT and said more matching "
+                                 "lines exist (see its final bracketed note, which names "
+                                 "the file). Search that file with path=<that file> and a "
+                                 "refined pattern, then answer from what you find."})
+                continue
             result.answer = content
             result.finish = "answered"
             return result

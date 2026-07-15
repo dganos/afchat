@@ -1,0 +1,6 @@
+{
+  "name": "mistral-nemo-12b",
+  "description": "Lab candidate: Mistral Nemo 12B under the production gemma4-qa agent contract (prompt/tools/runtime inherited from the Aristo production package).",
+  "extends": "../../../packages/gemma4-qa",
+  "model": { "id": "mistral-nemo:12b", "label": "mistral-nemo-12b", "context_length": 32768 }
+}

@@ -5,6 +5,16 @@ description: Run or explain the Aristo tokens/sec throughput benchmark (gemma-4-
 
 # Aristo throughput benchmark (tokens/sec)
 
+> **⚠️ SUPER IMPORTANT — SAME AGENT rule (applies to ALL afchat benchmarking):**
+> the lab/benchmarks and Aristo share ONE agent definition —
+> `packages/gemma4-qa/package.json` (model, system prompt, tools, and every
+> runtime knob: `max_steps`, `max_tool_result_chars`, `num_predict`,
+> `temperature`, `context_length`). Benchmarks exist to predict Aristo's
+> production behavior. Never tune agent behavior in a lab config or script — fix
+> it in the package (and if Aristo doesn't honor that knob yet, wire it into
+> `api/chat.js`). Lab configs own only the test environment: corpus, testset,
+> judge, backend URL, client timeout, candidate list.
+
 Measures **Aristo's actual configuration** — same model (`gemma-4-e4b`), same 32k
 context window, same system prompt + warm-up the app uses — driven through
 Ollama's native `/api/chat` exactly like Aristo's chat path. It reads Ollama's own

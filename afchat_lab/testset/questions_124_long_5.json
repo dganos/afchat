@@ -1,0 +1,73 @@
+{
+  "meta": {
+    "name": "124 long corpus — 5Q subset",
+    "version": 1,
+    "description": "5-question subset of questions_124_long_corpus.json (50Q), sampled evenly across the ordered set with harness.run_eval.representative_subset — deterministic, includes the first and last questions. For quick qualifier rounds; the full 50Q set is the real benchmark.",
+    "corpus_dir": "corpus_124",
+    "grading": "llm-judge (key_facts are required-fact anchors; verdict in {correct, partial, incorrect} -> score in {1.0, 0.5, 0.0})",
+    "answer_types": [
+      "numeric",
+      "term",
+      "list",
+      "explanation",
+      "multi"
+    ]
+  },
+  "questions": [
+    {
+      "id": "q01",
+      "source_doc": "eitam-data-and-limits.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "כמה מותר למסוק עיטם לשקול לכל היותר כשהוא ממריא?",
+      "reference_answer": "המשקל המרבי להמראה הוא 9,800 ק\"ג.",
+      "key_facts": [
+        "9,800"
+      ]
+    },
+    {
+      "id": "q13",
+      "source_doc": "pilots-roster-124.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "כמה שעות טיסה צבר האדם שעומד בראש טייסת 124?",
+      "reference_answer": "למפקד הטייסת 3,150 שעות טיסה.",
+      "key_facts": [
+        "3,150"
+      ]
+    },
+    {
+      "id": "q25",
+      "source_doc": "aguran-rescue-winch.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "כמה משקל מקסימום אפשר לתלות על כבל מנוף החילוץ?",
+      "reference_answer": "העומס המרבי הוא 272 ק\"ג — שני מחולצים.",
+      "key_facts": [
+        "272"
+      ]
+    },
+    {
+      "id": "q38",
+      "source_doc": "oils-and-lubricants.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כמה שמן מותר למנוע של העיטם 'לאכול' בשעת טיסה לפני שזו בעיה?",
+      "reference_answer": "תצרוכת השמן המותרת במנוע TX-900 היא עד 0.4 ליטר לשעת טיסה.",
+      "key_facts": [
+        "0.4"
+      ]
+    },
+    {
+      "id": "q50",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כששני הגנרטורים של הינשוף נופלים, כמה כוח מנוע הולך לאיבוד ולמה?",
+      "reference_answer": "ללא מתח AC תהיה ירידה של 18% מהכוח המצוי, בעקבות היפתחות שסתומי ANTI ICE.",
+      "key_facts": [
+        "18%"
+      ]
+    }
+  ]
+}

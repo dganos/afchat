@@ -1,6 +1,6 @@
 {
   "name": "gemma4-qa",
-  "version": 2,
+  "version": 6,
   "description": "QA over a document corpus. The model is not handed the documents — it must use read-only filesystem tools to find and read the right passage, then answer grounded in the text. Single source of truth for both afchat_lab (Python) and the Aristo app (JS): both load this package and supply only the tool implementations for their runtime.",
 
   "model": {
@@ -12,7 +12,10 @@
   "runtime": {
     "temperature": 0,
     "max_steps": 8,
-    "max_tool_result_chars": 16000
+    "_comment_max_tool_result_chars": "8000, not 16000: at 16000 chars (~6.4k tokens) per tool result, ~5 of the 8 steps overflow the 32k window on large documents and Ollama silently truncates the transcript — dropping the system prompt and question. 8000 keeps a full 8-step run inside the window; the visible [TRUNCATED...] marker tells the model how to recover.",
+    "max_tool_result_chars": 8000,
+    "_comment_num_predict": "Bounds a single generation so a temp-0 repetition loop cannot run until the request timeout; ~10x the longest legitimate answer.",
+    "num_predict": 2048
   },
 
   "system_prompt_file": "system_prompt.md",
@@ -44,7 +47,7 @@
     },
     {
       "name": "search_content",
-      "description": "Search for text INSIDE the documents (a content/grep search). Returns the matching lines with their file and line number. This is the fastest way to locate a fact without reading whole files. Matching is case-insensitive substring, so each term is a short exact word/number/unit — not a whole sentence or a glob like '*length*'. To try several wordings at once, pass a LIST of terms in `pattern` (e.g. [\"אורך\", \"length\"]); a line matches if it contains ANY of them. Use pattern='## ' to list every section heading (a table of contents), and pass context=N to also return the N lines AFTER each match — search a section's heading with context=25 to read that section's body.",
+      "description": "Search for text INSIDE the documents (a content/grep search). Returns the matching lines with their file and line number. This is the fastest way to locate a fact without reading whole files. Matching is case-insensitive substring, so each term is a short exact word/number/unit — not a whole sentence or a glob like '*length*'. To try several wordings at once, pass a LIST of terms in `pattern` (e.g. [\"אורך\", \"length\"]); a line matches if it contains ANY of them. Use pattern='## ' to list every section heading (a table of contents), and pass context=N to also return the N lines AFTER each match — search a section's heading with context=25 to read that section's body. If you omit context, each match returns its ENTIRE enclosing table or paragraph plus the nearest section heading — so a value anywhere in a matched table is visible, wherever the matched word sits in it. A search across ALL documents is a LOCATOR: it returns at most a few best blocks per file (most-matching files first, with a '+N more' note) — to read a document deeply, narrow with `path`.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -55,8 +58,8 @@
               { "type": "array", "items": { "type": "string" } }
             ]
           },
-          "path": { "type": "string", "description": "Optional file (or list of files) to restrict the search to. Defaults to all documents." },
-          "context": { "type": "integer", "description": "Number of lines to also return AFTER each match (like grep -A). Use ~20-30 to read a section body after matching its heading. Default 0." }
+          "path": { "type": "string", "description": "Optional file (or list of files) to restrict the search to — EXACT filename(s) from list_directory; globs like '*' are an error. Defaults to all documents." },
+          "context": { "type": "integer", "description": "Number of lines to also return AFTER each match (like grep -A). Use ~20-30 to read a section body after matching its heading. OMIT it to get each match's whole enclosing table or paragraph with its nearest section heading (usually what you want); pass 0 for a compact matches-only list (e.g. with pattern='## ')." }
         },
         "required": ["pattern"]
       }

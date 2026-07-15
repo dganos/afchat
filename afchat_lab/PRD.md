@@ -42,7 +42,7 @@ to evaluate Hebrew-capable models.
 
 | Term | Meaning |
 |------|---------|
-| **Candidate** | A model under test, loaded in LM Studio, driven as an agent over the OpenAI-compatible API. |
+| **Candidate** | A model under test, served by Ollama, driven as an agent over the native /api/chat endpoint. |
 | **Judge** | Claude (via Claude Agent SDK), the sole grader. Compares candidate answer to reference + key facts. |
 | **Corpus** | 10 EU-transportation reference documents (markdown, ~2,000–2,800 words each). Hebrew variant: `corpus_he/`. |
 | **Test set** | 30 questions, each answerable from a single corpus doc, with a reference answer + required key facts. |
@@ -55,8 +55,8 @@ to evaluate Hebrew-capable models.
 
 ```
                          ┌──────────────────────────────────────────────┐
-   question  ──────────► │  Candidate (LM Studio model, as an agent)      │
-                         │  • OpenAI-compatible API (localhost:1234)      │
+   question  ──────────► │  Candidate (Ollama model, as an agent)         │
+                         │  • native /api/chat (localhost:11434)          │
                          │  • reads docs via filesystem MCP tools          │
                          │    (harness is the MCP host)                    │
                          └───────────────┬────────────────────────────────┘
@@ -75,7 +75,7 @@ to evaluate Hebrew-capable models.
 1. **Harness** (`harness/`, Python, ~750 LOC)
    - `agent.py` — MCP host + tool-using agent loop (the candidate driver).
    - `judge.py` — Claude Agent SDK grader. No fallback: no Claude → no test.
-   - `run_eval.py` — orchestrator: loads/unloads models via `lms`, runs questions,
+   - `run_eval.py` — orchestrator: runs questions (Ollama auto-loads models),
      calls judge, writes outputs (JSON + `.log` + leaderboard.md + live snapshot).
 
 2. **Web UI** (`webui/`, FastAPI + single-file HTML)
@@ -94,10 +94,10 @@ to evaluate Hebrew-capable models.
    - `tests/` — unit tests for the scoring math (`summarize`) and judge JSON parsing.
 
 ### Dependencies
-- **LM Studio** with local server (`lms server start`), candidate models pulled.
-- **`lms` CLI** in PATH (`~/.lmstudio/bin`) for model load/unload.
+- **Ollama** running (`ollama serve`), candidate models pulled; models auto-load
+  on first request.
 - **Claude Code login** (the judge reuses it; no API key).
-- Python 3.10 venv: `openai`, `mcp`, `PyYAML`, `claude-agent-sdk`, `fastapi`, `uvicorn`.
+- Python 3.10 venv: `mcp`, `PyYAML`, `claude-agent-sdk`, `fastapi`, `uvicorn`.
 
 ---
 
@@ -110,8 +110,8 @@ to evaluate Hebrew-capable models.
   `max_steps`, then force a final answer.
 - **FR-3** Preflight the Claude judge before any inference; **abort** the whole run if
   Claude is unreachable.
-- **FR-4** Load each model before its run and unload after (via `lms`), unless `--no-manage`.
-  Support per-model `context_length` and `gpu` offload overrides.
+- **FR-4** Ollama auto-loads each model on its first request; no explicit
+  load/unload management. Support a per-model `context_length` override.
 - **FR-5** Grade every answer with Claude; record verdict, score, rationale, and the
   **raw judge JSON response**.
 - **FR-6** Distinguish two failure types:
@@ -120,7 +120,7 @@ to evaluate Hebrew-capable models.
 - **FR-7** Write outputs per run: `run-<ts>.json` (full structured data), `run-<ts>.log`
   (complete console output incl. full thinking), `leaderboard.md`. Maintain a
   `run-live.json` snapshot updated after every question; delete it when the run ends.
-- **FR-8** CLI flags: `--limit N`, `--models <labels/ids>`, `--no-manage`, `--config <file>`.
+- **FR-8** CLI flags: `--limit N`, `--models <labels/ids>`, `--config <file>`.
 
 ### 5.2 Scoring & metrics
 - **FR-9** Per model: `correct/partial/incorrect/model_errors/judge_errors` counts,
@@ -240,8 +240,9 @@ to evaluate Hebrew-capable models.
 1. **Agentic, not retrieval-handed** — the model must use tools to read docs. Tool-call
    reliability is part of what we measure (e.g. models that emit tool calls as raw text fail).
 2. **Claude as sole judge** — key-fact-anchored grading, no brittle string match, no fallback.
-3. **Reuse LM Studio's filesystem MCP server** — the harness is the MCP *host*; we do not
-   ship a custom server. Pointed read-only at the corpus.
+3. **Standard filesystem MCP server** (`@modelcontextprotocol/server-filesystem`) —
+   the harness is the MCP *host*; we do not ship a custom server. Pointed read-only
+   at the corpus.
 4. **System-prompt handling** — models that reject the `system` role (e.g. DictaLM 2.0) are
    incompatible with the agentic design; we select tool-capable models instead of degrading
    the test (rejected: stuffing the whole corpus into the prompt — that is a different test).
@@ -268,8 +269,8 @@ to evaluate Hebrew-capable models.
 
 - **BUG-1 (fixed) — Stop button unreliable.** The launch now persists the child PID to
   `.run.pid`; `POST /api/run/stop` falls back to killing by PID (and finalizing state +
-  clearing the live snapshot) when the in-process handle is gone. Residual: the in-flight
-  `lms`/model call may still hold resources briefly after SIGKILL.
+  clearing the live snapshot) when the in-process handle is gone. Residual: an
+  in-flight model call may still hold resources briefly after SIGKILL.
 - **BUG-2 (mitigated, watch) — Live-console token duplication.** Caused by watchdog
   reconnects opening overlapping SSE streams during slow (80s/Q) generation. Mitigated via
   empty-data keepalives + single-EventSource guard + 15s watchdog. Verify under the 12B model.
@@ -279,28 +280,26 @@ to evaluate Hebrew-capable models.
   polling continues for a re-adopted run; the live token stream does not (handle was lost).
 - **LIMITATION — DictaLM 2.0** cannot do tool calling (Mistral/Zephyr template, user/assistant
   roles only). Excluded from the benchmark by design.
-- **NOTE — `lms ls` index** can show stale entries after on-disk model deletion until LM
-  Studio rescans.
 
 ---
 
 ## 11. Models Under Test (current)
 
 ### EN (`config.yaml`)
-| Label | ID | Size |
-|-------|-----|------|
-| gemma-4-e4b | google/gemma-4-e4b | ~6.9 GB |
-| gemma-4-12b | google/gemma-4-12b | ~7.6 GB |
-| qwen3-4b | qwen/qwen3-4b | ~2.3 GB |
-| phi-4-mini-reasoning | microsoft/phi-4-mini-reasoning | ~2.2 GB |
+| Label | ID / package |
+|-------|---------------|
+| gemma-4-e4b | gemma-4-e4b:latest (PRODUCTION, Aristo's package) |
+| qwen3-4b | agents/qwen3-4b |
+| qwen3-8b | agents/qwen3-8b |
 
 ### HE (`config_he.yaml`)
-| Label | ID | Base | Size |
-|-------|-----|------|------|
-| dictalm3-1.7b | dictalm-3.0-1.7b-instruct | Qwen3 | ~1.1 GB |
-| dictalm3-12b | dictalm-3.0-nemotron-12b-instruct | Nemotron | ~7.5 GB |
-| gemma-4-e4b | google/gemma-4-e4b | — | ~6.9 GB |
-| qwen3-4b | qwen/qwen3-4b | — | ~2.3 GB |
+| Label | ID / package |
+|-------|---------------|
+| gemma-4-e4b | gemma-4-e4b:latest (PRODUCTION, Aristo's package) |
+| qwen3-4b / 8b / 14b | agents/qwen3-* |
+| dictalm3-1.7b / 12b | agents/dictalm3-* |
+| mistral-nemo-12b | agents/mistral-nemo-12b |
+| claude-sonnet-ref | claude-sonnet-4-6 (hosted reference) |
 
 ---
 
@@ -310,7 +309,7 @@ to evaluate Hebrew-capable models.
 cd afchat_lab
 python3.10 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-# Prereqs: lms server start ; models pulled ; logged into Claude Code
+# Prereqs: ollama serve ; models pulled ; logged into Claude Code
 
 # CLI
 .venv/bin/python -m harness.run_eval --models gemma-4-e4b --limit 5

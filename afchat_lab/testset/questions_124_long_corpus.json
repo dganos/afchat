@@ -1,0 +1,462 @@
+{
+  "meta": {
+    "name": "124 long corpus — צי הטייסת: נתונים, נהלים, ציוד והתנהגות",
+    "version": 1,
+    "description": "50 questions over the enlarged 32-document corpus_124 (the two real ינשוף docs plus 30 fictional squadron docs: aircraft data/limits, pilots, equipment, emergency, mechanical, and behavioral orders). Questions are phrased the way a human operator would ask — deliberately AVOIDING the documents' exact wording and headings — so the agent must locate the right document among 32 files and answer by comprehension, not keyword matching. reference_answer + key_facts define ground truth for the LLM judge.",
+    "corpus_dir": "corpus_124",
+    "grading": "llm-judge (key_facts are required-fact anchors; verdict in {correct, partial, incorrect} -> score in {1.0, 0.5, 0.0})",
+    "answer_types": ["numeric", "term", "list", "explanation", "multi"]
+  },
+  "questions": [
+    {
+      "id": "q01",
+      "source_doc": "eitam-data-and-limits.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "כמה מותר למסוק עיטם לשקול לכל היותר כשהוא ממריא?",
+      "reference_answer": "המשקל המרבי להמראה הוא 9,800 ק\"ג.",
+      "key_facts": ["9,800"]
+    },
+    {
+      "id": "q02",
+      "source_doc": "eitam-data-and-limits.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "מה המהירות הכי גבוהה שמותר לטוס בה קדימה בעיטם?",
+      "reference_answer": "המהירות המרבית קדימה (VNE) של העיטם היא 168 קשר.",
+      "key_facts": ["168"]
+    },
+    {
+      "id": "q03",
+      "source_doc": "eitam-data-and-limits.md",
+      "difficulty": "medium",
+      "answer_type": "term",
+      "question": "מי חייב להיות על הסיפון כדי שעיטם יוכל לצאת לטיסת יום רגילה?",
+      "reference_answer": "הצוות המזערי הוא טייס אחד ומכונאי מוטס (בטיסות מבצעיות ולילה — שני טייסים).",
+      "key_facts": ["מכונאי מוטס"]
+    },
+    {
+      "id": "q04",
+      "source_doc": "dores-data-and-limits.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "כמה אנשים אפשר להושיב מאחור בדורס לכל היותר?",
+      "reference_answer": "עד 19 נוסעים.",
+      "key_facts": ["19"]
+    },
+    {
+      "id": "q05",
+      "source_doc": "dores-data-and-limits.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "מה אורך המסלול הקצר ביותר שממנו הדורס מסוגל להמריא כשהוא בשיא משקלו?",
+      "reference_answer": "780 מטר.",
+      "key_facts": ["780"]
+    },
+    {
+      "id": "q06",
+      "source_doc": "rafraf-uav-data-and-limits.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "כמה שעות ברצף מסוגל המל\"ט רפרף להחזיק באוויר?",
+      "reference_answer": "עד 9 שעות שהייה.",
+      "key_facts": ["9"]
+    },
+    {
+      "id": "q07",
+      "source_doc": "eitam-emergency-procedures.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "נשאר לעיטם רק מנוע אחד עובד — לאיזו מהירות מתייצבים?",
+      "reference_answer": "90 קשר.",
+      "key_facts": ["90"]
+    },
+    {
+      "id": "q08",
+      "source_doc": "eitam-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "explanation",
+      "question": "הפעלנו את בקבוק הכיבוי הראשון על אש במנוע העיטם — מתי מחליטים להפעיל גם את השני?",
+      "reference_answer": "אם האש נמשכת 10 שניות אחרי הפעלת הבקבוק הראשי — מפעילים את הבקבוק המשני.",
+      "key_facts": ["10 שניות"]
+    },
+    {
+      "id": "q09",
+      "source_doc": "dores-emergency-procedures.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "כשטסים בדורס על מנוע יחיד, מתחת לאיזו מהירות אסור בשום אופן לרדת?",
+      "reference_answer": "אסור לרדת מתחת 94 קשר (VMC) — מתחתיה אי אפשר לשמור כיוון עם מנוע בודד.",
+      "key_facts": ["94"]
+    },
+    {
+      "id": "q10",
+      "source_doc": "dores-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "לפני שמנחיתים את הדורס על הבטן בלי גלגלים, לכמה דלק צריך לרדת?",
+      "reference_answer": "שורפים דלק עד מינימום של 300 ק\"ג.",
+      "key_facts": ["300"]
+    },
+    {
+      "id": "q11",
+      "source_doc": "rafraf-emergency-procedures.md",
+      "difficulty": "medium",
+      "answer_type": "explanation",
+      "question": "נותק הקשר עם הרפרף — מה הוא יעשה בעצמו ותוך כמה זמן?",
+      "reference_answer": "לאחר 30 שניות ללא קשר המל\"ט נכנס אוטומטית למצב שיבה הביתה: מטפס ל-8,000 רגל וטס ישירות לנקודת HOME.",
+      "key_facts": ["30 שניות", "8,000"]
+    },
+    {
+      "id": "q12",
+      "source_doc": "rafraf-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כמה זמן בלי תקשורת יעבור עד שהרפרף יפתח מצנח לבד?",
+      "reference_answer": "אם הקשר לא חודש בתוך 25 דקות — המל\"ט פותח מצנח אוטומטית מעל נקודת HOME.",
+      "key_facts": ["25"]
+    },
+    {
+      "id": "q13",
+      "source_doc": "pilots-roster-124.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "כמה שעות טיסה צבר האדם שעומד בראש טייסת 124?",
+      "reference_answer": "למפקד הטייסת 3,150 שעות טיסה.",
+      "key_facts": ["3,150"]
+    },
+    {
+      "id": "q14",
+      "source_doc": "pilots-roster-124.md",
+      "difficulty": "medium",
+      "answer_type": "term",
+      "question": "איזה בעל תפקיד הוא היחיד בטייסת שיכול ללמד טיסה עם משקפי לילה על עיטם מגרסת ד'?",
+      "reference_answer": "ראש מדור האימונים — מדריך הלילה היחיד בטייסת המוסמך להדרכת ראיית לילה בגרסת ד'.",
+      "key_facts": ["מדור אימונים"]
+    },
+    {
+      "id": "q15",
+      "source_doc": "qualification-tracks.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "כמה שעות טיסה צריך לצבור לפני שאפשר בכלל לגשת להסמכת מוביל זוג?",
+      "reference_answer": "לפחות 800 שעות טיסה, מהן 350 בעיטם.",
+      "key_facts": ["800"]
+    },
+    {
+      "id": "q16",
+      "source_doc": "qualification-tracks.md",
+      "difficulty": "hard",
+      "answer_type": "multi",
+      "question": "טייס רוצה להפוך לבוחן — אילו תנאים עליו לעמוד בהם ומי חותם על המינוי?",
+      "reference_answer": "נדרשים 2,500 שעות טיסה לפחות, ותק שנתיים כמדריך, ומינוי אישי בכתב של מפקד הכנף.",
+      "key_facts": ["2,500", "מפקד הכנף"]
+    },
+    {
+      "id": "q17",
+      "source_doc": "currency-requirements.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "כמה ימים מקסימום מותר לטייס לא לגעת במסוק לפני שהוא נדרש לטוס עם מדריך?",
+      "reference_answer": "אחרי 45 יום ללא טיסה נדרשת טיסת רענון עם מדריך.",
+      "key_facts": ["45"]
+    },
+    {
+      "id": "q18",
+      "source_doc": "currency-requirements.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "אחרי כמה זמן בלי לטוס בכלל שולחים טייס חזרה לבית הספר לטיסה?",
+      "reference_answer": "הפסקת טיסה מעל 12 חודשים מחייבת מסלול הכשרה מחודש בבית הספר לטיסה.",
+      "key_facts": ["12 חודשים"]
+    },
+    {
+      "id": "q19",
+      "source_doc": "crew-pairing-rules.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "שני טייסים צעירים רוצים לטוס יחד — מאיזה רף שעות זה בכלל מותר?",
+      "reference_answer": "אסור לשבץ יחד שני טייסים שלכל אחד מהם פחות מ-700 שעות טיסה.",
+      "key_facts": ["700"]
+    },
+    {
+      "id": "q20",
+      "source_doc": "barkan-helmet-and-nvg.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "לכמה שעות עבודה מספיקה סוללה אחת במשקפי הלילה לילית 4?",
+      "reference_answer": "סוללת ליתיום AA אחת מספיקה ל-12 שעות פעולה.",
+      "key_facts": ["12"]
+    },
+    {
+      "id": "q21",
+      "source_doc": "barkan-helmet-and-nvg.md",
+      "difficulty": "hard",
+      "answer_type": "explanation",
+      "question": "באמצע טיסת לילה מתחילה להבהב נורית הסוללה במשקפיים — כמה זמן עבודה עוד נשאר?",
+      "reference_answer": "נורית LOW BAT מהבהבת מציינת שנותרו כ-30 דקות פעולה.",
+      "key_facts": ["30 דקות"]
+    },
+    {
+      "id": "q22",
+      "source_doc": "shahaf-survival-vest.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "אם טייס נוטש מעל הים ומפעיל את משואת החירום שלו, כמה זמן היא תמשיך לשדר?",
+      "reference_answer": "משואת זהרון משדרת 48 שעות על הסוללה.",
+      "key_facts": ["48"]
+    },
+    {
+      "id": "q23",
+      "source_doc": "tavor-comm-systems.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "איבדנו קשר רדיו לגמרי — איזה מספר מכוונים בטרנספונדר?",
+      "reference_answer": "קוד 7600.",
+      "key_facts": ["7600"]
+    },
+    {
+      "id": "q24",
+      "source_doc": "mitzpan-zahav-nav.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "כמה זמן אורך יישור מלא של מערכת מצפן זהב לפני התנעה?",
+      "reference_answer": "יישור מלא על הקרקע אורך 4 דקות.",
+      "key_facts": ["4 דקות"]
+    },
+    {
+      "id": "q25",
+      "source_doc": "aguran-rescue-winch.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "כמה משקל מקסימום אפשר לתלות על כבל מנוף החילוץ?",
+      "reference_answer": "העומס המרבי הוא 272 ק\"ג — שני מחולצים.",
+      "key_facts": ["272"]
+    },
+    {
+      "id": "q26",
+      "source_doc": "aguran-rescue-winch.md",
+      "difficulty": "hard",
+      "answer_type": "multi",
+      "question": "אחרי כמה הרמות רצופות חייבים לעצור ולתת למנוף לנוח, ולכמה זמן?",
+      "reference_answer": "אחרי 25 מחזורי הרמה רצופים נדרש קירור של 20 דקות למנוע המנוף.",
+      "key_facts": ["25", "20"]
+    },
+    {
+      "id": "q27",
+      "source_doc": "fuel-types-and-servicing.md",
+      "difficulty": "medium",
+      "answer_type": "explanation",
+      "question": "מה חייבים לוודא לגבי האנשים בתא לפני שמתדלקים עם מנועים עובדים?",
+      "reference_answer": "תדלוק חם אסור עם נוסעים בתא — יש להוריד את הנוסעים; הוא מותר רק בעמדות ייעודיות ועם מכונאי עם מטף.",
+      "key_facts": ["נוסעים"]
+    },
+    {
+      "id": "q28",
+      "source_doc": "magen-or-missile-warning.md",
+      "difficulty": "medium",
+      "answer_type": "term",
+      "question": "כשטסים מעל שטח ישראל, באיזה מצב עבודה חייבת להיות מערכת ההגנה העצמית?",
+      "reference_answer": "מעל שטחנו המערכת תופעל במצב SEMI (חצי-אוטומטי) בלבד.",
+      "key_facts": ["SEMI"]
+    },
+    {
+      "id": "q29",
+      "source_doc": "emergency-landing-fields.md",
+      "difficulty": "medium",
+      "answer_type": "term",
+      "question": "הדורס צריך לנחות נחיתת חירום בלילה בגזרת דרום — לאיזה מנחת הוא יכול ללכת?",
+      "reference_answer": "מנחת גביש — המנחת היחיד המתאים לדורס גם בלילה (אספלט 1,250 מ' עם תאורת מסלול קבועה).",
+      "key_facts": ["גביש"]
+    },
+    {
+      "id": "q30",
+      "source_doc": "emergency-landing-fields.md",
+      "difficulty": "hard",
+      "answer_type": "explanation",
+      "question": "איך גורמים לתאורה במשטח אלון להידלק כשמגיעים אליו בלילה?",
+      "reference_answer": "תאורת החירום מופעלת בקריאת רדיו — שלוש לחיצות מיקרופון בתדר הפיקוח המקומי.",
+      "key_facts": ["שלוש לחיצות"]
+    },
+    {
+      "id": "q31",
+      "source_doc": "sar-procedures.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "הוקפץ צוות החילוץ באמצע הלילה — תוך כמה דקות הוא חייב להיות באוויר?",
+      "reference_answer": "בלילה — המראה תוך 20 דקות (ביום 12 דקות).",
+      "key_facts": ["20"]
+    },
+    {
+      "id": "q32",
+      "source_doc": "sar-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "על איזה תדר מתאמים את פעולת החילוץ עם הגורמים האחרים?",
+      "reference_answer": "תדר תיאום החילוץ הוא 123.1 MHz.",
+      "key_facts": ["123.1"]
+    },
+    {
+      "id": "q33",
+      "source_doc": "bird-strike-procedures.md",
+      "difficulty": "medium",
+      "answer_type": "explanation",
+      "question": "בחודשי הנדידה, איפה אסור לטוס נמוך ובאילו שעות?",
+      "reference_answer": "אין לטוס בציר העמקים מתחת ל-2,000 רגל בשעות הבוקר, עד 10:00.",
+      "key_facts": ["2,000", "10:00"]
+    },
+    {
+      "id": "q34",
+      "source_doc": "brownout-landing.md",
+      "difficulty": "medium",
+      "answer_type": "explanation",
+      "question": "ענן האבק עלה ובלע אותנו לגמרי רגע לפני הנגיעה — מה הפעולה הנכונה?",
+      "reference_answer": "הליכה סביב מיידית: הרם קולקטיב, אף לאופק, טפס ישר. אין לנסות לשבת דרך הענן.",
+      "key_facts": ["סביב"]
+    },
+    {
+      "id": "q35",
+      "source_doc": "brownout-landing.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "מתחת לאיזה גובה אסור להישאר בריחוף מעל קרקע מאובקת?",
+      "reference_answer": "אין לרחף מתחת 20 רגל מעל משטח אבק.",
+      "key_facts": ["20"]
+    },
+    {
+      "id": "q36",
+      "source_doc": "weather-minima.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כמה תאורת ירח לפחות צריך כדי לטוס עם משקפי לילה כשאין תאורה מלאכותית באזור?",
+      "reference_answer": "תאורת ירח של 20% לפחות.",
+      "key_facts": ["20%"]
+    },
+    {
+      "id": "q37",
+      "source_doc": "eitam-maintenance-intervals.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "אחרי כמה שעות טיסה חייבים לזרוק להב רוטור ראשי של עיטם?",
+      "reference_answer": "אורך החיים של להב רוטור ראשי הוא 2,400 שעות.",
+      "key_facts": ["2,400"]
+    },
+    {
+      "id": "q38",
+      "source_doc": "oils-and-lubricants.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כמה שמן מותר למנוע של העיטם 'לאכול' בשעת טיסה לפני שזו בעיה?",
+      "reference_answer": "תצרוכת השמן המותרת במנוע TX-900 היא עד 0.4 ליטר לשעת טיסה.",
+      "key_facts": ["0.4"]
+    },
+    {
+      "id": "q39",
+      "source_doc": "tires-and-brakes.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "לאיזה לחץ מנפחים את הגלגלים הראשיים של העיטם?",
+      "reference_answer": "לחץ הצמיג הראשי בעיטם הוא 132 PSI (±4).",
+      "key_facts": ["132"]
+    },
+    {
+      "id": "q40",
+      "source_doc": "rotor-track-and-balance.md",
+      "difficulty": "hard",
+      "answer_type": "explanation",
+      "question": "נמדד ברוטור רטט של 0.45 IPS — מה עושים עם המסוק?",
+      "reference_answer": "רטט מעל 0.4 IPS מחייב קרקוע עד ביצוע איזון.",
+      "key_facts": ["קרקוע"]
+    },
+    {
+      "id": "q41",
+      "source_doc": "salt-corrosion-washes.md",
+      "difficulty": "medium",
+      "answer_type": "explanation",
+      "question": "טסנו נמוך מעל הים — מה חייבים לעשות למנועים ועד מתי?",
+      "reference_answer": "טיסה מעל ים מתחת ל-500 רגל מחייבת שטיפת מנועים במים מותפלים תוך 24 שעות.",
+      "key_facts": ["24 שעות"]
+    },
+    {
+      "id": "q42",
+      "source_doc": "crew-rest-and-alcohol.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "טייס שתה שלוש בירות בערב — כמה שעות הוא מנוע מלטוס?",
+      "reference_answer": "מעל 2 מנות משקה — 24 שעות עד טיסה.",
+      "key_facts": ["24"]
+    },
+    {
+      "id": "q43",
+      "source_doc": "crew-rest-and-alcohol.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כמה שעות מקסימום יכול להימשך יום עבודה טיסתי רגיל, בלי אישורים מיוחדים?",
+      "reference_answer": "יום פעילות טיסתי לא יעלה על 12 שעות מהתייצבות ועד הדממה אחרונה.",
+      "key_facts": ["12"]
+    },
+    {
+      "id": "q44",
+      "source_doc": "safety-reporting-culture.md",
+      "difficulty": "medium",
+      "answer_type": "multi",
+      "question": "קרתה תקרית בטיחות בטיסה — באיזה טופס מדווחים ותוך כמה זמן?",
+      "reference_answer": "תקרית בטיחות מדווחת בטופס \"בטח 1\" תוך 48 שעות.",
+      "key_facts": ["בטח 1", "48"]
+    },
+    {
+      "id": "q45",
+      "source_doc": "cockpit-discipline.md",
+      "difficulty": "medium",
+      "answer_type": "explanation",
+      "question": "מתחת לאיזה גובה מפסיקים לדבר על דברים שלא קשורים לטיסה?",
+      "reference_answer": "מתחת ל-1,000 רגל נהוג 'תא סטרילי' — שיחה מבצעית בלבד.",
+      "key_facts": ["1,000"]
+    },
+    {
+      "id": "q46",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "בגשם, כשהמגבים של הינשוף עובדים, עד איזו מהירות מותר לטוס?",
+      "reference_answer": "המהירות המרבית עם מגבים פועלים היא 120 קשר.",
+      "key_facts": ["120"]
+    },
+    {
+      "id": "q47",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "מהי כמות הדלק הנמוכה ביותר שמותר להגיע אליה בינשוף?",
+      "reference_answer": "מינימום הדלק הוא 350 ליברות.",
+      "key_facts": ["350"]
+    },
+    {
+      "id": "q48",
+      "source_doc": "yanshuf-data-and-limits.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כמה לחץ צריך להיות אגור במצבר כדי שאפשר יהיה להתניע את יחידת הכוח העזר של הינשוף?",
+      "reference_answer": "הלחץ המינימלי ב-ACCUMULATOR להתנעת APU הוא 2,800 PSI.",
+      "key_facts": ["2800"]
+    },
+    {
+      "id": "q49",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "בגישה הסופית לנחיתה עם זנב תקוע בינשוף, איזו מהירות ואיזה שיעור הנמכה שומרים?",
+      "reference_answer": "בפיינל של אובדן היגוי זנב: מהירות 110 קשר ושיעור הנמכה 200 רגל לדקה.",
+      "key_facts": ["110", "200"]
+    },
+    {
+      "id": "q50",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כששני הגנרטורים של הינשוף נופלים, כמה כוח מנוע הולך לאיבוד ולמה?",
+      "reference_answer": "ללא מתח AC תהיה ירידה של 18% מהכוח המצוי, בעקבות היפתחות שסתומי ANTI ICE.",
+      "key_facts": ["18%"]
+    }
+  ]
+}

@@ -1,0 +1,128 @@
+{
+  "meta": {
+    "name": "124 long corpus — 10Q subset",
+    "version": 1,
+    "description": "10-question subset of questions_124_long_corpus.json (50Q), sampled evenly across the ordered set with harness.run_eval.representative_subset — deterministic, includes the first and last questions. For quick qualifier rounds; the full 50Q set is the real benchmark.",
+    "corpus_dir": "corpus_124",
+    "grading": "llm-judge (key_facts are required-fact anchors; verdict in {correct, partial, incorrect} -> score in {1.0, 0.5, 0.0})",
+    "answer_types": [
+      "numeric",
+      "term",
+      "list",
+      "explanation",
+      "multi"
+    ]
+  },
+  "questions": [
+    {
+      "id": "q01",
+      "source_doc": "eitam-data-and-limits.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "כמה מותר למסוק עיטם לשקול לכל היותר כשהוא ממריא?",
+      "reference_answer": "המשקל המרבי להמראה הוא 9,800 ק\"ג.",
+      "key_facts": [
+        "9,800"
+      ]
+    },
+    {
+      "id": "q06",
+      "source_doc": "rafraf-uav-data-and-limits.md",
+      "difficulty": "easy",
+      "answer_type": "numeric",
+      "question": "כמה שעות ברצף מסוגל המל\"ט רפרף להחזיק באוויר?",
+      "reference_answer": "עד 9 שעות שהייה.",
+      "key_facts": [
+        "9"
+      ]
+    },
+    {
+      "id": "q12",
+      "source_doc": "rafraf-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כמה זמן בלי תקשורת יעבור עד שהרפרף יפתח מצנח לבד?",
+      "reference_answer": "אם הקשר לא חודש בתוך 25 דקות — המל\"ט פותח מצנח אוטומטית מעל נקודת HOME.",
+      "key_facts": [
+        "25"
+      ]
+    },
+    {
+      "id": "q17",
+      "source_doc": "currency-requirements.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "כמה ימים מקסימום מותר לטייס לא לגעת במסוק לפני שהוא נדרש לטוס עם מדריך?",
+      "reference_answer": "אחרי 45 יום ללא טיסה נדרשת טיסת רענון עם מדריך.",
+      "key_facts": [
+        "45"
+      ]
+    },
+    {
+      "id": "q23",
+      "source_doc": "tavor-comm-systems.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "איבדנו קשר רדיו לגמרי — איזה מספר מכוונים בטרנספונדר?",
+      "reference_answer": "קוד 7600.",
+      "key_facts": [
+        "7600"
+      ]
+    },
+    {
+      "id": "q28",
+      "source_doc": "magen-or-missile-warning.md",
+      "difficulty": "medium",
+      "answer_type": "term",
+      "question": "כשטסים מעל שטח ישראל, באיזה מצב עבודה חייבת להיות מערכת ההגנה העצמית?",
+      "reference_answer": "מעל שטחנו המערכת תופעל במצב SEMI (חצי-אוטומטי) בלבד.",
+      "key_facts": [
+        "SEMI"
+      ]
+    },
+    {
+      "id": "q34",
+      "source_doc": "brownout-landing.md",
+      "difficulty": "medium",
+      "answer_type": "explanation",
+      "question": "ענן האבק עלה ובלע אותנו לגמרי רגע לפני הנגיעה — מה הפעולה הנכונה?",
+      "reference_answer": "הליכה סביב מיידית: הרם קולקטיב, אף לאופק, טפס ישר. אין לנסות לשבת דרך הענן.",
+      "key_facts": [
+        "סביב"
+      ]
+    },
+    {
+      "id": "q39",
+      "source_doc": "tires-and-brakes.md",
+      "difficulty": "medium",
+      "answer_type": "numeric",
+      "question": "לאיזה לחץ מנפחים את הגלגלים הראשיים של העיטם?",
+      "reference_answer": "לחץ הצמיג הראשי בעיטם הוא 132 PSI (±4).",
+      "key_facts": [
+        "132"
+      ]
+    },
+    {
+      "id": "q45",
+      "source_doc": "cockpit-discipline.md",
+      "difficulty": "medium",
+      "answer_type": "explanation",
+      "question": "מתחת לאיזה גובה מפסיקים לדבר על דברים שלא קשורים לטיסה?",
+      "reference_answer": "מתחת ל-1,000 רגל נהוג 'תא סטרילי' — שיחה מבצעית בלבד.",
+      "key_facts": [
+        "1,000"
+      ]
+    },
+    {
+      "id": "q50",
+      "source_doc": "yanshuf-emergency-procedures.md",
+      "difficulty": "hard",
+      "answer_type": "numeric",
+      "question": "כששני הגנרטורים של הינשוף נופלים, כמה כוח מנוע הולך לאיבוד ולמה?",
+      "reference_answer": "ללא מתח AC תהיה ירידה של 18% מהכוח המצוי, בעקבות היפתחות שסתומי ANTI ICE.",
+      "key_facts": [
+        "18%"
+      ]
+    }
+  ]
+}

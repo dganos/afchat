@@ -102,7 +102,11 @@ class AgentPackageTest(unittest.TestCase):
         self.assertEqual(pkg.model["context_length"], 32768)
         self.assertEqual(pkg.tool_names,
                          ["list_directory", "read_text_file", "search_content"])
-        self.assertEqual(pkg.runtime["max_tool_result_chars"], 16000)
+        # v3: 8000 keeps a full 8-step run inside the 32k window (16000 overflowed
+        # it on large docs and Ollama silently truncated the transcript);
+        # num_predict bounds a runaway temp-0 repetition loop.
+        self.assertEqual(pkg.runtime["max_tool_result_chars"], 8000)
+        self.assertEqual(pkg.runtime["num_predict"], 2048)
         # the tuned prompt guidance must be present
         self.assertIn("search_content", pkg.system_prompt)
         self.assertIn("SAME language", pkg.system_prompt)
@@ -134,6 +138,180 @@ class ParseJsonTest(unittest.TestCase):
 
     def test_malformed_json_returns_none(self):
         self.assertIsNone(_parse_json("{not valid json}"))
+
+
+class GrepSmartContextTest(unittest.TestCase):
+    """search_content with OMITTED context returns the whole enclosing structure.
+
+    Facts often sit in table rows that don't repeat the matched header keyword
+    (e.g. a roster row "| 124-01 | מפקד הטייסת | 3,150 |" under a "שעות טיסה"
+    column header) — a bare-match default silently strips the answer rows. The
+    smart block returns the entire table (or paragraph) plus the nearest heading.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.TemporaryDirectory()
+        rows = "\n".join(f"| pilot-{k:02d} | {1000 + k} |" for k in range(1, 15))
+        (Path(self.dir.name) / "doc.md").write_text(
+            "## Squadron roster\n"
+            "\n"
+            "| role | flight hours |\n"
+            "|------|-------------|\n"
+            "| commander | 3,150 |\n"
+            f"{rows}\n"
+            "| newest wingman | 700 |\n"
+            "\n"
+            "The oldest airframe joined the squadron in 1998.\n"
+            "It still flies every week.\n",
+            encoding="utf-8",
+        )
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_header_match_includes_bottom_row(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "flight hours")  # matches header only
+        self.assertIn("3,150", out)   # first row
+        self.assertIn("700", out)     # LAST row, 16 lines below the header
+
+    def test_bottom_row_match_includes_header(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "newest wingman")
+        self.assertIn("flight hours", out)  # header pulled in from above
+
+    def test_nearest_heading_breadcrumb(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "commander")
+        self.assertIn("## Squadron roster", out)
+
+    def test_paragraph_expansion(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "1998")
+        self.assertIn("every week", out)  # rest of the paragraph included
+
+    def test_matches_in_same_table_collapse_to_one_block(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "pilot-")  # 14 matching rows
+        self.assertEqual(out.count("| role | flight hours |"), 1)
+
+    def test_explicit_zero_is_honored(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "flight hours", context=0)
+        self.assertNotIn("3,150", out)
+
+    def test_explicit_context_keeps_grep_a_behavior(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "flight hours", context=2)
+        self.assertIn("3,150", out)   # 2 lines after the header
+        self.assertNotIn("700", out)  # but not the bottom of the table
+
+
+class GrepPathAndWideSearchTest(unittest.TestCase):
+    """Bad paths must fail loudly; wide searches are diversified locators.
+
+    A glob/unknown path silently scanning nothing reads exactly like "the fact
+    is not in the documents" (observed model refusals). And a corpus-wide search
+    must not let alphabetically-early files shadow the best-matching file.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.TemporaryDirectory()
+        base = Path(self.dir.name)
+        # aa-*: early alphabetical file with a couple of matches; zz-*: LAST
+        # alphabetical file with the most matches (the relevant one).
+        (base / "aa-first.md").write_text("radar note\n\nradar again\n", encoding="utf-8")
+        (base / "bb-second.md").write_text("radar mention\n", encoding="utf-8")
+        (base / "cc-third.md").write_text("no match here\n", encoding="utf-8")
+        (base / "dd-fourth.md").write_text("also nothing\n", encoding="utf-8")
+        (base / "zz-target.md").write_text(
+            "\n\n".join(f"radar fact {k}" for k in range(8)), encoding="utf-8")
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_glob_path_is_loud_error(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "radar", ["*"])
+        self.assertIn("[tool error]", out)
+        self.assertIn("Omit 'path'", out)
+
+    def test_unknown_path_is_loud_error(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "radar", "no-such-file.md")
+        self.assertIn("[tool error]", out)
+        self.assertIn("no-such-file.md", out)
+
+    def test_wide_search_ranks_best_file_first(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "radar")
+        self.assertLess(out.index("zz-target.md"), out.index("aa-first.md"))
+
+    def test_wide_search_caps_blocks_per_file_with_pointer(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "radar")
+        self.assertEqual(out.count("zz-target.md:"), 3)  # 3 blocks, not all 8
+        self.assertIn("more matching lines in zz-target.md", out)
+
+    def test_wide_search_clamps_explicit_context(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "radar fact 0", context=25)
+        # zz-target has 15 lines after the match; a wide search clamps to 10.
+        self.assertEqual(out.count("zz-target.md:"), 11)
+
+    def test_narrow_search_keeps_full_depth(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "radar fact 0", "zz-target.md", context=25)
+        self.assertEqual(out.count("zz-target.md:"), 15)  # whole remaining file
+
+    def test_toc_pattern_exempt_from_wide_caps(self):
+        from harness.agent import _grep_corpus
+        base = Path(self.dir.name)
+        for k in range(6):
+            (base / f"doc{k}.md").write_text(
+                "\n".join(f"## section {k}-{h}\n\nbody" for h in range(5)), encoding="utf-8")
+        out = _grep_corpus(self.dir.name, "## ", context=0)
+        # 30 headings across 6 files — far beyond the wide 3-per-file/12-total caps.
+        self.assertGreaterEqual(out.count("## section"), 30)
+
+    def test_zero_hit_phrase_relaxes_to_words(self):
+        from harness.agent import _grep_corpus
+        out = _grep_corpus(self.dir.name, "radar maximum duration limit")
+        self.assertIn("no lines matched the exact phrase", out)
+        self.assertIn("zz-target.md", out)  # 'radar' word matches ranked in
+
+    def test_line_budget_cuts_at_block_boundary_with_note(self):
+        from harness.agent import _grep_corpus
+        # 15 matches × 26 lines each in one file: far beyond the 110-line budget.
+        base = Path(self.dir.name)
+        (base / "zz-deep.md").write_text(
+            "\n".join(f"radar item {k}\n" + "\n".join(f"detail {k}-{j}" for j in range(25))
+                      for k in range(15)), encoding="utf-8")
+        out = _grep_corpus(self.dir.name, "radar item", "zz-deep.md", context=25)
+        self.assertIn("of 15 matches", out)
+        self.assertNotIn("TRUNCATED", out)
+        self.assertLess(len(out.splitlines()), 130)
+
+
+class PointerNudgeTest(unittest.TestCase):
+    def test_refusal_detection(self):
+        from harness.agent import _is_refusal
+        self.assertTrue(_is_refusal("המידע לא נמצא במסמכים שסופקו."))
+        self.assertTrue(_is_refusal("The information is Not Found in the corpus."))
+        self.assertFalse(_is_refusal("המהירות המרבית היא 168 קשר (eitam.md)"))
+
+    def test_pointer_marks_match_grep_output(self):
+        # The nudge triggers on markers _grep_corpus actually emits — keep in sync.
+        import tempfile
+        from harness.agent import _POINTER_MARKS, _grep_corpus
+        with tempfile.TemporaryDirectory() as d:
+            for k in range(5):
+                (Path(d) / f"f{k}.md").write_text(
+                    "\n\n".join(f"radar row {j}" for j in range(9)), encoding="utf-8")
+            out = _grep_corpus(d, "radar")
+            self.assertTrue(any(m in out for m in _POINTER_MARKS))
 
 
 if __name__ == "__main__":

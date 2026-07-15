@@ -328,18 +328,62 @@ async function extractText(fullPath) {
 // search_content: a content/grep search mirroring afchat_lab's _grep_corpus —
 // case-insensitive substring; "A OR B" matches a line containing either; context=N
 // returns the N lines AFTER each match; sandboxed to DOCS_PATH.
+// When context is OMITTED each match is expanded to its whole enclosing
+// STRUCTURE — the entire markdown table or paragraph plus the nearest section
+// heading — because facts often sit in table rows that don't repeat the matched
+// header/label keyword; overlapping matches collapse into one block. An explicit
+// context=0 is honored (compact listing, e.g. a "## " heading catalog).
 // Strip bidi/zero-width marks (LRM/RLM, embeddings, isolates, ZWSP/ZWNJ/ZWJ, BOM) so a
 // Hebrew↔Latin boundary can't silently break a literal substring match.
 const stripMarks = s => s.replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
 
+// The line indices of the structural block enclosing match line i — MUST mirror
+// afchat_lab's _block_indices exactly (SAME AGENT rule). Table line → the whole
+// contiguous table; otherwise the enclosing paragraph (contiguous non-blank
+// lines). The nearest preceding heading (≤60 lines back) is prepended as a
+// breadcrumb. Blocks longer than cap are windowed around the match; a table
+// always keeps its 2 header lines.
+const HEADING_RE = /^#{1,6}\s/
+const rangeIdx = (s, e) => Array.from({ length: e - s + 1 }, (_, k) => s + k)
+function blockIndices(lines, i, cap = 40) {
+  let idx
+  if (lines[i].trimStart().startsWith('|')) {
+    let s = i
+    while (s > 0 && lines[s - 1].trimStart().startsWith('|')) s--
+    let e = i
+    while (e + 1 < lines.length && lines[e + 1].trimStart().startsWith('|')) e++
+    idx = rangeIdx(s, e)
+    if (idx.length > cap) {
+      const ws = Math.max(s + 2, i - 3)
+      idx = [s, s + 1, ...rangeIdx(ws, Math.min(e, ws + cap - 3))]
+    }
+  } else {
+    let s = i
+    while (s > 0 && lines[s - 1].trim()) s--
+    let e = i
+    while (e + 1 < lines.length && lines[e + 1].trim()) e++
+    if (e - s + 1 > cap) {
+      s = Math.max(s, i - (cap >> 1))
+      e = Math.min(e, s + cap - 1)
+    }
+    idx = rangeIdx(s, e)
+  }
+  for (let j = idx[0] - 1; j >= Math.max(0, idx[0] - 60); j--) {
+    if (HEADING_RE.test(lines[j].trimStart())) { idx.unshift(j); break }
+  }
+  return idx
+}
+
 async function grepCorpus({ pattern, path: scope, context }) {
-  const ctx = Math.max(0, Math.min(parseInt(context, 10) || 0, 60))
+  const smart = context == null
+  let ctx = smart ? 0 : Math.max(0, Math.min(parseInt(context, 10) || 0, 60))
   // `pattern` may be a single term, a LIST of terms, or (fallback) a string "A OR B".
   // A line matches if it contains ANY term.
   const raw = Array.isArray(pattern) ? pattern : String(pattern ?? '').split(/\s+OR\s+/)
   const terms = raw.map(t => stripMarks(String(t).trim().toLowerCase())).filter(Boolean)
   if (!terms.length) return { error: "search_content needs a non-empty 'pattern'." }
   const LINE_CAP = 300, MAX_MATCHES = 40
+  const BAD_PATH_HINT = "Omit 'path' to search ALL documents, or pass exact filename(s) shown by list_directory."
 
   let files
   if (!scope) {
@@ -348,8 +392,12 @@ async function grepCorpus({ pattern, path: scope, context }) {
     files = []
     for (const s of (Array.isArray(scope) ? scope : [scope])) {
       if (!s) continue
-      const full = safePath(s)                       // throws if outside DOCS_PATH
-      if (!fs.existsSync(full)) continue
+      // A glob or unknown path must FAIL LOUDLY: a silent empty scan reads
+      // exactly like "the fact is not in the documents" (mirrors _scan_roots).
+      if (/[*?]/.test(String(s))) return { error: `path '${s}' is a glob, not a filename. ${BAD_PATH_HINT}` }
+      let full
+      try { full = safePath(s) } catch { return { error: `path not within the corpus: ${s}` } }
+      if (!fs.existsSync(full)) return { error: `path '${s}' does not match any document. ${BAD_PATH_HINT}` }
       if (fs.statSync(full).isDirectory()) {
         files.push(...walkDir(full).map(f => path.relative(DOCS_PATH, path.join(full, f))))
       } else {
@@ -359,33 +407,98 @@ async function grepCorpus({ pattern, path: scope, context }) {
     files = [...new Set(files)]
   }
 
+  // Breadth × depth budget (mirrors _grep_corpus): a WIDE search (>3 files) is a
+  // locator — at most 3 blocks per file, files ordered by match count instead of
+  // alphabetically, explicit context clamped. Deep reading requires a narrow path.
+  const wide = files.length > 3
+  // The "## " table-of-contents idiom is exempt from wide budgeting: heading
+  // lines are one-liners, and a capped catalog defeats its whole purpose.
+  const toc = terms.every(t => /^#+$/.test(t))
+  const perFileCap = (wide && !toc) ? 3 : MAX_MATCHES
+  // A wide result must FIT the tool-result cap as whole blocks: 12 blocks of the
+  // best-matching files beat 40 blocks chopped mid-block at the char cap.
+  const maxBlocks = (wide && !toc) ? 12 : MAX_MATCHES
+  if (wide && !toc) ctx = Math.min(ctx, 10)
+
   const clip = s => { s = s.trim(); return s.length <= LINE_CAP ? s : s.slice(0, LINE_CAP) + '…' }
-  const blocks = []
-  for (const file of files) {
-    let content
-    try { content = await extractText(path.join(DOCS_PATH, file)) } catch { continue }
-    const lines = content.split('\n')
-    for (let i = 0; i < lines.length; i++) {
-      const low = stripMarks(lines[i].toLowerCase())
-      if (terms.some(t => low.includes(t))) {
-        const end = Math.min(lines.length, i + 1 + ctx)
-        const block = []
-        for (let j = i; j < end; j++) block.push(`${file}:${j + 1}: ${clip(lines[j])}`)
-        blocks.push(block.join('\n'))
-        if (blocks.length >= MAX_MATCHES) {
-          return { text: blocks.join(ctx ? '\n\n' : '\n') + `\n\n[showing the first ${MAX_MATCHES} matches; refine the pattern for fewer]` }
+  const sep = (smart || ctx) ? '\n\n' : '\n'
+
+  const scan = async (active) => {
+    const perFile = []  // [matchCount, blocks[]] per file
+    for (const file of files) {
+      let content
+      try { content = await extractText(path.join(DOCS_PATH, file)) } catch { continue }
+      const lines = content.split('\n')
+      const fblocks = []
+      let extra = 0     // matching lines beyond this file's block budget
+      let lastEnd = -1  // last line already emitted for this file (smart mode dedupe)
+      for (let i = 0; i < lines.length; i++) {
+        const low = stripMarks(lines[i].toLowerCase())
+        if (!active.some(t => low.includes(t))) continue
+        if (smart && i <= lastEnd) continue             // already inside the previous block
+        if (fblocks.length >= perFileCap) { extra++; continue }
+        let idx
+        if (smart) {
+          idx = blockIndices(lines, i)
+          lastEnd = idx[idx.length - 1]
+        } else {
+          idx = rangeIdx(i, Math.min(lines.length - 1, i + ctx))
         }
+        fblocks.push(idx.map(j => `${file}:${j + 1}: ${clip(lines[j])}`).join('\n'))
       }
+      if (!fblocks.length) continue
+      if (extra) fblocks[fblocks.length - 1] += `\n[+${extra} more matching lines in ${file} — search with path="${file}" to see them]`
+      perFile.push([fblocks.length + extra, fblocks])
+    }
+    return perFile
+  }
+
+  let note = ''
+  let perFile = await scan(terms)
+  if (!perFile.length && terms.some(t => t.includes(' '))) {
+    // A multi-word phrase almost never matches as a literal substring (models
+    // search whole sentences); relax to individual words rather than return a
+    // false "not in the documents".
+    const words = [...new Set(terms.flatMap(t => t.split(/\s+/)).filter(w => w.length >= 2))]
+    if (words.length) {
+      perFile = await scan(words)
+      note = '[no lines matched the exact phrase; showing lines matching its individual words instead]\n\n'
     }
   }
-  if (!blocks.length) return { text: `No lines containing ${terms.map(t => `"${t}"`).join(' / ')} were found in the documents.` }
-  return { text: blocks.join(ctx ? '\n\n' : '\n') }
+  if (!perFile.length) return { text: `No lines containing ${terms.map(t => `"${t}"`).join(' / ')} were found in the documents.` }
+  perFile.sort((a, b) => b[0] - a[0])  // most-matching files first, never alphabetical
+  const blocks = perFile.flatMap(([, fb]) => fb)
+  // Emit whole blocks up to a LINE budget (fits the tool-result char cap), so a
+  // too-broad search ends with an explicit "+N more" instead of a mid-block chop
+  // that silently hides every later match.
+  const out = []
+  let used = 0
+  for (const b of blocks) {
+    const nLines = b.split('\n').length
+    if (out.length && (used + nLines > 110 || out.length >= maxBlocks)) break
+    out.push(b)
+    used += nLines
+  }
+  let text = note + out.join(sep)
+  if (out.length < blocks.length) {
+    text += `\n\n[showing ${out.length} of ${blocks.length} matches; refine the pattern or narrow with 'path' to see the rest]`
+  }
+  return { text }
 }
 
 const TOOL_IMPLS = {
   list_directory: async ({ path: dir }) => {
     try {
-      const target = (!dir || dir === '.') ? DOCS_PATH : safePath(dir)
+      // Models pass ".", "./docs", or other guesses; a listing error makes them
+      // conclude "there are no documents". Any path that doesn't resolve to a real
+      // directory under the corpus falls back to the corpus root (mirrors the lab).
+      let target = DOCS_PATH
+      if (dir && dir !== '.' && dir !== './') {
+        try {
+          const p = safePath(dir)
+          if (fs.existsSync(p) && fs.statSync(p).isDirectory()) target = p
+        } catch { /* outside the corpus → corpus root */ }
+      }
       const files = walkDir(target)
       return { files, count: files.length }
     } catch (err) { return { error: err.message } }
@@ -625,7 +738,10 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
           model: currentModel, messages,
           tools: ollamaTools.length ? ollamaTools : undefined,
           stream: true, keep_alive: -1,
-          options: { temperature: temp, num_ctx: numCtx },
+          // num_predict comes from the shared agent package (same knob the lab
+          // runs with — the lab must behave exactly like Aristo): bounds a
+          // runaway generation instead of letting it run until abort/timeout.
+          options: { temperature: temp, num_ctx: numCtx, num_predict: AGENT?.runtime?.num_predict || undefined },
         }),
         signal,
       })

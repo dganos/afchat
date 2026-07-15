@@ -10,6 +10,7 @@ Scoring: correct -> 1.0, partial -> 0.5, incorrect -> 0.0.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -137,14 +138,30 @@ async def preflight(model: str = "claude-sonnet-4-6") -> None:
 
 
 async def grade(question: str, reference: str, key_facts: list[str], candidate: str, *, model: str = "claude-sonnet-4-6") -> Verdict:
-    """Grade with Claude. Raises JudgeUnavailable if the judge can't run."""
+    """Grade with Claude. Raises JudgeUnavailable if the judge can't run.
+
+    Retries transient judge failures with backoff: a single flaky SDK call
+    ("Claude Code returned an error result") otherwise voids a real, possibly
+    correct answer — and a mid-run flake once cascaded across 40 questions.
+    """
     prompt = JUDGE_TEMPLATE.format(
         question=question,
         reference=reference,
         key_facts="\n".join(f"- {k}" for k in key_facts),
         candidate=candidate or "(no answer)",
     )
-    text = await _query_claude(prompt, model)
+    last: JudgeUnavailable | None = None
+    for attempt in range(4):
+        try:
+            text = await _query_claude(prompt, model)
+            break
+        except JudgeUnavailable as e:
+            last = e
+            if attempt == 3:
+                raise
+            wait = 10 * (attempt + 1)
+            log.warning("grade retry %d in %ds after: %s", attempt + 1, wait, e)
+            await asyncio.sleep(wait)
     data = _parse_json(text)
     if not data or "verdict" not in data:
         return Verdict("incorrect", 0.0, "judge output unparseable", raw=text.strip())

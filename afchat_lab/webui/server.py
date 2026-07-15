@@ -39,8 +39,8 @@ app = FastAPI(title="afchat_lab", lifespan=_lifespan)
 # Single active run (this is a single-user local tool).
 RUN: dict = {"proc": None, "pid": None, "lines": [], "offset": 0, "status": "idle", "started": None, "cmd": None}
 
-ACTIVE_CONFIG: str = "config.yaml"
-CONFIG_OPTIONS: list[str] = ["config.yaml", "config_he.yaml", "config_124.yaml"]
+ACTIVE_CONFIG: str = "config_124_long.yaml"
+CONFIG_OPTIONS: list[str] = ["config_124_long.yaml", "config_124_long_10.yaml", "config_124_long_5.yaml"]
 
 # Persisted PID of the eval subprocess. Survives a UI-server restart so an
 # orphaned run can still be stopped and stale state reconciled (BUG-1/BUG-3).
@@ -259,22 +259,60 @@ def aggregate_runs() -> JSONResponse:
     })
 
 
+def _downloaded_models(cfg: dict) -> list[dict]:
+    """Every model already in the Ollama store (/api/tags), for ad-hoc selection.
+
+    Model choice is decoupled from the config's models: list — the UI offers the
+    whole store and the harness accepts unknown ids as ad-hoc entries. Empty when
+    the active config isn't Ollama-backed or the server is unreachable.
+    """
+    base = (cfg.get("ollama") or {}).get("base_url")
+    if not base:
+        return []
+    try:
+        import urllib.request
+        with urllib.request.urlopen(base.rstrip("/") + "/api/tags", timeout=3) as r:
+            data = json.loads(r.read())
+        return [
+            {"name": m["name"], "size_gb": round(m.get("size", 0) / 1e9, 1)}
+            for m in sorted(data.get("models", []), key=lambda m: m["name"])
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 @app.get("/api/state")
 def state() -> dict:
     cfg = load_config()
     ts = load_testset()
-    # Backend block: Ollama (native /api) or LM Studio (OpenAI /v1), whichever the
-    # active config declares.
-    if "ollama" in cfg:
-        backend = {"runtime": "ollama", "base_url": cfg["ollama"].get("base_url"),
-                   "context_length": cfg["ollama"].get("num_ctx")}
-    else:
-        backend = {"runtime": "lmstudio",
-                   **{k: cfg["lmstudio"].get(k) for k in ("context_length", "base_url", "manage_models")}}
+    # Backend block: Ollama (native /api), the only backend. The context window
+    # comes from the shared agent package.
+    try:
+        from harness.package import load_package
+        pkg_ctx = load_package(LAB / cfg["package"]).model.get("context_length")
+    except Exception:  # noqa: BLE001
+        pkg_ctx = None
+    backend = {"runtime": "ollama",
+               "base_url": (cfg.get("ollama") or {}).get("base_url"),
+               "context_length": pkg_ctx}
+    # Resolve per-model package entries (`package: agents/<label>`) to their
+    # id/label so the UI can render and select them.
+    models = []
+    for m in cfg["models"]:
+        if m.get("package") and not (m.get("id") and m.get("label")):
+            try:
+                from harness.package import load_package
+                pm = load_package(LAB / m["package"])
+                m = {**m, "id": m.get("id", pm.model["id"]),
+                     "label": m.get("label", pm.model.get("label", pm.model["id"]))}
+            except Exception as e:  # noqa: BLE001
+                m = {**m, "id": m.get("id", "?"), "label": m.get("label", f"{m['package']} (broken: {e})")}
+        models.append(m)
     return {
-        "models": cfg["models"],
+        "models": models,
+        "downloaded": _downloaded_models(cfg),
         "judge": cfg["judge"],
-        "lmstudio": backend,
+        "backend": backend,
         "testset": {"name": ts["meta"]["name"], "count": len(ts["questions"])},
         "runs": list_runs(),
         "run_status": RUN["status"],
@@ -402,14 +440,18 @@ async def start_run(req: Request) -> dict:
     models = [m for m in body.get("models", []) if m]
     if models:
         flags += ["--models", ",".join(models)]
-    if body.get("no_manage"):
-        flags.append("--no-manage")
 
     cmd = [sys.executable, "-u", "-m", "harness.run_eval", "--config", ACTIVE_CONFIG, *flags]
     RUN.update(status="running", lines=[f"$ {' '.join(cmd)}\n"], offset=0, started=datetime.now().isoformat(timespec="seconds"), cmd=cmd)
-    lms_bin = str(Path.home() / ".lmstudio" / "bin")
+    # Tool homes this machine keeps off the default PATH: ~/.local/node/bin
+    # (npx → MCP filesystem server) and ~/.local/bin (claude → judge) — without
+    # these a UI-launched run dies in preflight.
+    extra_bins = [
+        str(Path.home() / ".local" / "node" / "bin"),
+        str(Path.home() / ".local" / "bin"),
+    ]
     run_env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    run_env["PATH"] = lms_bin + os.pathsep + run_env.get("PATH", "")
+    run_env["PATH"] = os.pathsep.join([*extra_bins, run_env.get("PATH", "")])
     proc = await asyncio.create_subprocess_exec(
         *cmd, cwd=str(LAB), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         env=run_env,
@@ -453,14 +495,6 @@ async def stop_run() -> dict:
         _clean_live(ACTIVE_CONFIG)
     RUN["pid"] = None
     _clear_pidfile()
-    # Unload models with a timeout so we don't hang here either.
-    try:
-        lms_path = str(Path.home() / ".lmstudio" / "bin" / "lms")
-        p = await asyncio.create_subprocess_exec(lms_path, "unload", "--all",
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await asyncio.wait_for(p.wait(), timeout=10.0)
-    except Exception:  # noqa: BLE001
-        pass
     return {"ok": True}
 
 

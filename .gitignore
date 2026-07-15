@@ -15,7 +15,11 @@ scripts/.venv/
 afchat_lab/results/
 afchat_lab/results_he/
 afchat_lab/results_124/
+afchat_lab/results_124_long/
+afchat_lab/results_124_long_10/
+afchat_lab/results_124_long_5/
 afchat_lab/judge.log
+afchat_lab/*.nohup.log
 afchat_lab/.run.pid
 afchat_lab/.venv/
 afchat_lab/**/__pycache__/
