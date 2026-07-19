@@ -15,7 +15,9 @@ const ollama = spawn(OLLAMA_BIN, ['serve'], {
     ...process.env,
     OLLAMA_MODELS: MODELS_PATH,
     OLLAMA_HOST: `127.0.0.1:${OLLAMA_PORT}`,
-    OLLAMA_MAX_LOADED_MODELS: '1',
+    // 2, not 1: keep gemma AND the small bge-m3 embedder resident so the semantic
+    // supplement doesn't evict/reload the chat model each search (see main.js).
+    OLLAMA_MAX_LOADED_MODELS: '2',
     // Flash Attention — faster decode/prefill on Apple Silicon; off by default.
     OLLAMA_FLASH_ATTENTION: '1'
   }

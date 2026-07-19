@@ -1,0 +1,53 @@
+{
+  "_comment": "Cross-runtime loop-conformance spec. Each scenario is a scripted sequence of model turns fed to BOTH the lab (Python answer_question_ollama) and the app (JS streamChatResponse) loops; both MUST inject the same recovery-nudge sequence. This is the guard that the two agent loops (which are duplicated across Python and JS) never drift on error-recovery behaviour again. A turn is either {\"content\": \"...\"} (a text answer / empty turn) or {\"tools\": [{\"name\",\"args\",\"result\"}]} (a tool-calling turn plus the canned tool output fed back). expect_nudges is the ordered list of recoveries that must fire: empty | pointer | final.",
+  "max_steps": 8,
+  "scenarios": [
+    {
+      "name": "plain-answer",
+      "turns": [{ "content": "The maximum weight is 9,800 kg." }],
+      "expect_nudges": []
+    },
+    {
+      "name": "empty-turn-recovers",
+      "turns": [{ "content": "" }, { "content": "The maximum weight is 9,800 kg." }],
+      "expect_nudges": ["empty"]
+    },
+    {
+      "name": "empty-twice-accepts-second",
+      "turns": [{ "content": "" }, { "content": "" }],
+      "expect_nudges": ["empty"]
+    },
+    {
+      "name": "refusal-with-pointer-recovers",
+      "turns": [
+        { "tools": [{ "name": "search_content", "args": { "pattern": "חמצן" }, "result": "medical.md:5: חמצן\n[+6 more matching lines in medical.md — search with path=\"medical.md\" to see them]" }] },
+        { "content": "לא נמצא מידע במסמכים." },
+        { "content": "מותר לאחסן חמצן עד 90 יום (medical.md)." }
+      ],
+      "expect_nudges": ["pointer"]
+    },
+    {
+      "name": "refusal-without-pointer-accepted",
+      "turns": [
+        { "tools": [{ "name": "search_content", "args": { "pattern": "חמצן" }, "result": "medical.md:5: חמצן — נתון כללי" }] },
+        { "content": "not found in the documents." }
+      ],
+      "expect_nudges": []
+    },
+    {
+      "name": "max-steps-forces-final",
+      "turns": [
+        { "tools": [{ "name": "search_content", "args": { "pattern": "a" }, "result": "r1" }] },
+        { "tools": [{ "name": "search_content", "args": { "pattern": "b" }, "result": "r2" }] },
+        { "tools": [{ "name": "search_content", "args": { "pattern": "c" }, "result": "r3" }] },
+        { "tools": [{ "name": "search_content", "args": { "pattern": "d" }, "result": "r4" }] },
+        { "tools": [{ "name": "search_content", "args": { "pattern": "e" }, "result": "r5" }] },
+        { "tools": [{ "name": "search_content", "args": { "pattern": "f" }, "result": "r6" }] },
+        { "tools": [{ "name": "search_content", "args": { "pattern": "g" }, "result": "r7" }] },
+        { "tools": [{ "name": "search_content", "args": { "pattern": "h" }, "result": "r8" }] },
+        { "content": "Final answer after running out of steps." }
+      ],
+      "expect_nudges": ["final"]
+    }
+  ]
+}

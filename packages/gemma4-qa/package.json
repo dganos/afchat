@@ -1,6 +1,6 @@
 {
   "name": "gemma4-qa",
-  "version": 6,
+  "version": 8,
   "description": "QA over a document corpus. The model is not handed the documents — it must use read-only filesystem tools to find and read the right passage, then answer grounded in the text. Single source of truth for both afchat_lab (Python) and the Aristo app (JS): both load this package and supply only the tool implementations for their runtime.",
 
   "model": {
@@ -15,7 +15,17 @@
     "_comment_max_tool_result_chars": "8000, not 16000: at 16000 chars (~6.4k tokens) per tool result, ~5 of the 8 steps overflow the 32k window on large documents and Ollama silently truncates the transcript — dropping the system prompt and question. 8000 keeps a full 8-step run inside the window; the visible [TRUNCATED...] marker tells the model how to recover.",
     "max_tool_result_chars": 8000,
     "_comment_num_predict": "Bounds a single generation so a temp-0 repetition loop cannot run until the request timeout; ~10x the longest legitimate answer.",
-    "num_predict": 2048
+    "num_predict": 2048,
+
+    "_comment_recovery": "Loop error-recovery POLICY — the single source of truth for how the agent reacts to a glitchy turn, read identically by afchat_lab (Python) and Aristo (JS) so their two loop implementations cannot drift. Each nudge fires at most once per question. Historically these lived only in the lab's code and were never ported to the app, so the app silently ended on empty/dropped turns; centralizing them here fixes that and prevents recurrence.",
+    "recovery": {
+      "transient_retries": 3,
+      "empty_turn_nudge": "Your last reply was empty. Based only on the documents you have read, give your final answer now.",
+      "max_steps_final": "Based only on the documents you have read, give your final answer now.",
+      "refusal_pointer_nudge": "Your last search result was CUT and said more matching lines exist (see its final bracketed note, which names the file). Search that file with path=<that file> and a refined pattern, then answer from what you find.",
+      "refusal_markers": ["לא נמצא", "לא נמצאו", "אינו מופיע", "אינם מופיעים", "אין מידע", "אינו נמצא", "not found", "no information", "not available", "does not appear", "couldn't find"],
+      "pointer_markers": ["more matching lines in", "refine the pattern or narrow with 'path'"]
+    }
   },
 
   "system_prompt_file": "system_prompt.md",
@@ -23,7 +33,7 @@
   "tools": [
     {
       "name": "list_directory",
-      "description": "List the files in a directory. Call it first to see which documents exist. Use \".\" or the corpus root for the top-level documents folder.",
+      "description": "List the documents as a CATALOG: one line per file with the document's title and its main section headings. Call it first and pick the document whose TOPIC (name, title, or headings) matches the question. Use \".\" or the corpus root for the top-level documents folder.",
       "parameters": {
         "type": "object",
         "properties": {

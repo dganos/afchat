@@ -60,9 +60,15 @@ function startOllama() {
       ...process.env,
       OLLAMA_MODELS: getResourcePath('models'),
       OLLAMA_HOST: `127.0.0.1:${OLLAMA_PORT}`,
-      // Keep at most one model resident — this is an 8 GB air-gapped target,
-      // two models swapping into RAM thrashes swap (which is disabled).
-      OLLAMA_MAX_LOADED_MODELS: '1',
+      // Keep up to two models resident: the chat model (gemma, ~4.5 GB) AND the
+      // small embedder (bge-m3, ~1.2 GB) used by search_content's semantic
+      // supplement. At 1, every semantic lookup evicted gemma and forced a cold
+      // reload on the next turn. Both fit together on 16 GB (~5.7 GB). CAVEAT: on
+      // the 8 GB air-gapped target this is tight with swap disabled — if the
+      // embedder can't load there, the semantic supplement degrades to
+      // lexical-only (search_content catches the embed failure), so it won't
+      // crash, but keeping 2 resident on 8 GB needs validation.
+      OLLAMA_MAX_LOADED_MODELS: '2',
       // Flash Attention: faster decode (~+15%) and prefill on Apple Silicon, and
       // it is off by default in Ollama. Measured net win for our doc-QA workload.
       OLLAMA_FLASH_ATTENTION: '1',

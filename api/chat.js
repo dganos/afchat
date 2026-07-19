@@ -2,6 +2,7 @@ const http = require('http')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const crypto = require('crypto')
 const { createOllama } = require('ollama-ai-provider')
 const { streamText, generateText, wrapLanguageModel, extractReasoningMiddleware, jsonSchema, pipeDataStreamToResponse, formatDataStreamPart } = require('ai')
 
@@ -337,6 +338,7 @@ async function extractText(fullPath) {
 // Hebrew↔Latin boundary can't silently break a literal substring match.
 const stripMarks = s => s.replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
 
+
 // The line indices of the structural block enclosing match line i — MUST mirror
 // afchat_lab's _block_indices exactly (SAME AGENT rule). Table line → the whole
 // contiguous table; otherwise the enclosing paragraph (contiguous non-blank
@@ -372,6 +374,210 @@ function blockIndices(lines, i, cap = 40) {
     if (HEADING_RE.test(lines[j].trimStart())) { idx.unshift(j); break }
   }
   return idx
+}
+
+// One catalog line per document: filename — title: first section headings.
+// This is what list_directory returns to the model: a bare file listing forces
+// blind document selection by NAME alone; the catalog shows each document's `# `
+// title and its first 6 `## ` headings so selection becomes reading, not
+// guessing. Capped per line (long/garbled headings exist) so a large corpus
+// stays under the tool-result char cap. MUST mirror afchat_lab's
+// _corpus_catalog exactly (SAME AGENT rule).
+async function corpusCatalog(baseDir) {
+  const lines = []
+  for (const rel of walkDir(baseDir).sort()) {
+    let doc
+    try { doc = (await extractText(path.join(baseDir, rel))).split('\n') } catch { lines.push(rel); continue }
+    let title = ''
+    const secs = []
+    for (const l of doc) {
+      const ls = l.trimStart()
+      if (!title && ls.startsWith('# ')) title = ls.slice(2).trim().split(/\s+/).join(' ')
+      else if (ls.startsWith('## ')) secs.push(ls.slice(3).trim().split(/\s+/).join(' '))
+    }
+    let line = rel + (title ? ' — ' + title.slice(0, 80) : '')
+    if (secs.length) {
+      let shown = secs.slice(0, 6).join('; ')
+      if (shown.length > 180) shown = shown.slice(0, 180) + '…'
+      line += ': ' + shown
+      if (secs.length > 6) line += ` (+${secs.length - 6} more)`
+    }
+    lines.push(line)
+  }
+  return lines.join('\n')
+}
+
+// Reorder matched blocks by BM25 relevance to the query terms — MUST mirror
+// afchat_lab's _rank_blocks exactly (SAME AGENT rule). The old order was
+// match-count-per-FILE then line order within a file, so a chatty file's
+// incidental hits outranked the dense answer block, and a scoped single-file
+// search emitted blocks in line order (often past the result budget). BM25
+// scores each BLOCK: it wins by holding more of the query's DISTINCT and RARER
+// terms (idf), with only mild length normalization (b=0.25) so answer-rich
+// tables aren't penalized for length. Determinism: tf is the non-overlapping
+// substring count on the block's mark-stripped, lowercased CONTENT (never the
+// "file:line:" prefixes); the score loop iterates `terms` in order so float
+// accumulation matches Python; the score is rounded with floor(x*1e6+0.5)/1e6
+// (identical in both languages, coarse enough to erase libm last-ULP diffs),
+// then ties break by distinct-term coverage, then original position.
+function rankBlocks(blocks, terms, k1 = 1.2, b = 0.25) {
+  const n = blocks.length
+  const lens = [], tfs = []
+  for (const blk of blocks) {
+    const r = stripMarks(blk.raw.toLowerCase())
+    const t = r.trim()
+    lens.push(Math.max(1, t ? t.split(/\s+/).length : 0))
+    const tf = {}
+    for (const term of terms) {
+      const c = r.split(term).length - 1
+      if (c) tf[term] = c
+    }
+    tfs.push(tf)
+  }
+  const avg = lens.reduce((a, x) => a + x, 0) / n
+  const df = {}
+  for (const term of terms) df[term] = tfs.reduce((a, tf) => a + (tf[term] ? 1 : 0), 0)
+  const scores = []
+  for (let i = 0; i < n; i++) {
+    let s = 0
+    for (const term of terms) {
+      const c = tfs[i][term] || 0
+      if (!c) continue
+      const idf = Math.log(1 + (n - df[term] + 0.5) / (df[term] + 0.5))
+      s += idf * (c * (k1 + 1)) / (c + k1 * (1 - b + b * lens[i] / avg))
+    }
+    scores.push(s)
+  }
+  const r6 = x => Math.floor(x * 1e6 + 0.5) / 1e6
+  const idxs = blocks.map((_, i) => i)
+  idxs.sort((a, bb) => {
+    const d = r6(scores[bb]) - r6(scores[a])
+    if (d) return d
+    const cov = Object.keys(tfs[bb]).length - Object.keys(tfs[a]).length
+    if (cov) return cov
+    return a - bb
+  })
+  return idxs.map(i => blocks[i])
+}
+
+// ── Semantic retrieval (local embeddings) ─────────────────────────────────────
+// Lexical substring search can't bridge a cross-language wording gap: the answer
+// may be written in Latin ("...ACCUMULATOR...2800 PSI") while the question asks in
+// Hebrew ("מצבר"), so grep returns the wrong-but-matching block and the fact is
+// never seen. A local embedding model (bge-m3 via the bundled Ollama — open,
+// on-device) maps meaning to vectors so the answer block ranks near the QUESTION
+// regardless of language, with NO hand-built vocabulary. Complements grep: grep
+// stays primary (exact for numbers/codes), embeddings rescue term-mismatch cases
+// as a labelled supplement. MUST mirror afchat_lab's semantic code (SAME AGENT).
+// NOTE: requires the bundled Ollama to have the bge-m3 model available.
+const EMBED_MODEL = 'bge-m3'
+const EMBED_MAX_CHARS = 1600  // cap per input: bge-m3 token limit; a huge table 400s
+const SEM_TOPK = 3
+const SEM_MIN_COS = 0.45
+// Ambient question for the CURRENT turn (set by streamChatResponse). The model
+// calls search_content with a short pattern; the supplement ranks against this
+// full question (short patterns embed too noisily to rank reliably).
+let currentQuestion = ''
+const blockIndexCache = new Map()   // baseDir -> [{file, line, disp, raw, vec}]
+const qvCache = new Map()           // question -> embedding
+
+async function embed(texts) {
+  const capped = texts.map(t => ((t.length > EMBED_MAX_CHARS ? t.slice(0, EMBED_MAX_CHARS) : t) || ' '))
+  const out = []
+  for (let k = 0; k < capped.length; k += 32) {
+    const r = await fetch(`${OLLAMA_BASE}/api/embed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: EMBED_MODEL, input: capped.slice(k, k + 32) }),
+    })
+    if (!r.ok) throw new Error(`/api/embed ${r.status}`)
+    out.push(...(await r.json()).embeddings)
+  }
+  return out
+}
+
+// Segment a document into structural blocks: {line (1-based start), raw}. Same
+// structure notion as blockIndices but applied EXHAUSTIVELY (non-overlapping),
+// with the nearest preceding heading (<=60 lines) prepended as a breadcrumb.
+// MUST mirror afchat_lab's _chunk_doc.
+function chunkDoc(lines) {
+  const blocks = []
+  let i = 0, n = lines.length
+  while (i < n) {
+    if (!lines[i].trim()) { i++; continue }
+    const s = i
+    if (lines[i].trimStart().startsWith('|')) {
+      while (i + 1 < n && lines[i + 1].trimStart().startsWith('|')) i++
+    } else {
+      while (i + 1 < n && lines[i + 1].trim()) i++
+    }
+    const e = i
+    let head = null
+    for (let j = s - 1; j >= Math.max(0, s - 60); j--) {
+      if (HEADING_RE.test(lines[j].trimStart())) { head = lines[j]; break }
+    }
+    const raw = (head !== null ? [head] : []).concat(lines.slice(s, e + 1)).join('\n')
+    blocks.push({ line: s + 1, raw })
+    i = e + 1
+  }
+  return blocks
+}
+
+async function buildBlockIndex(baseDir) {
+  if (blockIndexCache.has(baseDir)) return blockIndexCache.get(baseDir)
+  const rawBlocks = []
+  for (const rel of walkDir(baseDir).sort()) {
+    let lines
+    try { lines = (await extractText(path.join(baseDir, rel))).split('\n') } catch { continue }
+    for (const { line, raw } of chunkDoc(lines)) {
+      const disp = raw.split('\n').map((t, off) => `${rel}:${line + off}: ${t}`).join('\n')
+      rawBlocks.push({ file: rel, line, disp, raw })
+    }
+  }
+  const sig = crypto.createHash('sha1')
+    .update(EMBED_MODEL + '\x00' + rawBlocks.map(b => b.raw).join('\x00'), 'utf-8').digest('hex')
+  // Cache OUTSIDE the corpus dir — a file under baseDir would be picked up by every
+  // corpus scan (catalog, grep, this index) as a spurious multi-MB "document".
+  const cacheFile = path.join(baseDir, '..', `.embed_cache_${path.basename(baseDir)}_${EMBED_MODEL.replace(/:/g, '_')}.json`)
+  let vecs = null
+  try {
+    const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'))
+    if (cached.sig === sig) vecs = cached.vecs
+  } catch { /* no/stale cache */ }
+  if (!vecs) {
+    vecs = await embed(rawBlocks.map(b => b.raw))
+    try { fs.writeFileSync(cacheFile, JSON.stringify({ sig, vecs })) } catch { /* best effort */ }
+  }
+  rawBlocks.forEach((b, k) => { b.vec = vecs[k] })
+  blockIndexCache.set(baseDir, rawBlocks)
+  return rawBlocks
+}
+
+function cosine(a, b) {
+  let dot = 0, na = 0, nb = 0
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i] }
+  return (na && nb) ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0
+}
+
+// Top semantic passages for the question, as a labelled supplement (or ''). Ranks
+// the pre-embedded corpus blocks by cosine to the QUESTION, restricted to scopeRels
+// when the search was path-scoped. MUST mirror afchat_lab's _semantic_supplement.
+async function semanticSupplement(baseDir, question, scopeRels) {
+  if (!question) return ''
+  let index, qv
+  try {
+    index = await buildBlockIndex(baseDir)
+    qv = qvCache.get(question)
+    if (!qv) { qv = (await embed([question]))[0]; qvCache.set(question, qv) }
+  } catch { return '' }  // embeddings unavailable → lexical only
+  const r6 = x => Math.floor(x * 1e6 + 0.5) / 1e6
+  const cand = index.filter(b => !scopeRels || scopeRels.has(b.file))
+  const scored = cand.map((b, i) => ({ s: r6(cosine(qv, b.vec)), i, b }))
+    .sort((x, y) => (y.s - x.s) || (x.i - y.i))
+  const picks = scored.slice(0, SEM_TOPK).filter(x => x.s >= SEM_MIN_COS)
+  if (!picks.length) return ''
+  const body = picks.map(x => x.b.disp).join('\n\n')
+  return '\n\n[Related passages by MEANING (semantic search on the question — the ' +
+    'wording may differ from your search terms; verify the value before using):]\n\n' + body
 }
 
 async function grepCorpus({ pattern, path: scope, context }) {
@@ -444,16 +650,20 @@ async function grepCorpus({ pattern, path: scope, context }) {
         } else {
           idx = rangeIdx(i, Math.min(lines.length - 1, i + ctx))
         }
-        fblocks.push(idx.map(j => `${file}:${j + 1}: ${clip(lines[j])}`).join('\n'))
+        fblocks.push({
+          disp: idx.map(j => `${file}:${j + 1}: ${clip(lines[j])}`).join('\n'),
+          raw: idx.map(j => lines[j]).join('\n'),
+        })
       }
       if (!fblocks.length) continue
-      if (extra) fblocks[fblocks.length - 1] += `\n[+${extra} more matching lines in ${file} — search with path="${file}" to see them]`
+      if (extra) fblocks[fblocks.length - 1].disp += `\n[+${extra} more matching lines in ${file} — search with path="${file}" to see them]`
       perFile.push([fblocks.length + extra, fblocks])
     }
     return perFile
   }
 
   let note = ''
+  let active = terms
   let perFile = await scan(terms)
   if (!perFile.length && terms.some(t => t.includes(' '))) {
     // A multi-word phrase almost never matches as a literal substring (models
@@ -462,21 +672,34 @@ async function grepCorpus({ pattern, path: scope, context }) {
     const words = [...new Set(terms.flatMap(t => t.split(/\s+/)).filter(w => w.length >= 2))]
     if (words.length) {
       perFile = await scan(words)
+      active = words
       note = '[no lines matched the exact phrase; showing lines matching its individual words instead]\n\n'
     }
   }
   if (!perFile.length) return { text: `No lines containing ${terms.map(t => `"${t}"`).join(' / ')} were found in the documents.` }
-  perFile.sort((a, b) => b[0] - a[0])  // most-matching files first, never alphabetical
-  const blocks = perFile.flatMap(([, fb]) => fb)
+  // Order blocks by BM25 relevance to the query terms, but ONLY for a WIDE
+  // (locator) search — there it replaces the crude match-count-per-file order
+  // (a chatty file's incidental hits outranking the one dense answer block).
+  // A SCOPED search means the model already narrowed to a file: its natural line
+  // order preserves structural context (a table read top-to-bottom, thresholds
+  // in sequence) that reranking would scramble — so scoped searches keep the old
+  // order. The "## " table-of-contents idiom always keeps document order.
+  let blocks
+  if (wide && !toc && perFile.reduce((a, [, fb]) => a + fb.length, 0) > 1) {
+    blocks = rankBlocks(perFile.flatMap(([, fb]) => fb), active)
+  } else {
+    perFile.sort((a, b) => b[0] - a[0])  // most-matching files first, never alphabetical
+    blocks = perFile.flatMap(([, fb]) => fb)
+  }
   // Emit whole blocks up to a LINE budget (fits the tool-result char cap), so a
   // too-broad search ends with an explicit "+N more" instead of a mid-block chop
   // that silently hides every later match.
   const out = []
   let used = 0
   for (const b of blocks) {
-    const nLines = b.split('\n').length
+    const nLines = b.disp.split('\n').length
     if (out.length && (used + nLines > 110 || out.length >= maxBlocks)) break
-    out.push(b)
+    out.push(b.disp)
     used += nLines
   }
   let text = note + out.join(sep)
@@ -499,8 +722,8 @@ const TOOL_IMPLS = {
           if (fs.existsSync(p) && fs.statSync(p).isDirectory()) target = p
         } catch { /* outside the corpus → corpus root */ }
       }
-      const files = walkDir(target)
-      return { files, count: files.length }
+      // The corpus CATALOG (title + main headings per file) — mirrors the lab.
+      return { text: await corpusCatalog(target) }
     } catch (err) { return { error: err.message } }
   },
 
@@ -525,7 +748,37 @@ const TOOL_IMPLS = {
     } catch (err) { return { error: err.message } }
   },
 
-  search_content: grepCorpus,
+  // Lexical grep, then append semantic passages for the ambient QUESTION — rescues
+  // cross-language wording gaps grep can't bridge (mirrors the lab's _dispatch_tool).
+  // Scoped to the same path if the search was path-scoped. Best-effort: any failure
+  // leaves the lexical result untouched.
+  search_content: async (args) => {
+    const res = await grepCorpus(args)
+    if (!currentQuestion) return res
+    try {
+      let scope = null
+      if (args && args.path) {
+        scope = new Set()
+        for (const s of (Array.isArray(args.path) ? args.path : [args.path])) {
+          if (!s || /[*?]/.test(String(s))) continue
+          let full
+          try { full = safePath(s) } catch { continue }
+          if (!fs.existsSync(full)) continue
+          if (fs.statSync(full).isDirectory()) {
+            for (const f of walkDir(full)) scope.add(path.relative(DOCS_PATH, path.join(full, f)))
+          } else {
+            scope.add(path.relative(DOCS_PATH, full))
+          }
+        }
+      }
+      const sup = await semanticSupplement(DOCS_PATH, currentQuestion, scope)
+      if (sup && res && typeof res === 'object') {
+        if (typeof res.text === 'string') res.text += sup
+        else if (typeof res.error === 'string') return { text: (res.error + sup) }
+      }
+    } catch { /* leave lexical result as-is */ }
+    return res
+  },
 }
 
 // Build the AI SDK tool set from the PACKAGE's contracts (description + JSON schema),
@@ -715,6 +968,10 @@ const isTransientNetErr = (e) =>
 // once on a transient connection reset, but only while nothing has been emitted
 // yet (so a mid-stream drop can't duplicate output).
 async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, signal }) {
+  // Retry depth from the shared recovery policy (SAME AGENT as the lab). Streaming
+  // can only safely retry BEFORE anything is emitted (see the !emitted guard below),
+  // so a mid-stream drop still surfaces — that constraint is inherent to streaming.
+  const transientRetries = AGENT?.runtime?.recovery?.transient_retries || 1
   for (let attempt = 0; ; attempt++) {
     const dec = new TextDecoder()
     let buf = '', content = '', sentLen = 0, frozen = false, emitted = false
@@ -774,9 +1031,9 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
     } catch (e) {
       // Retry a fresh connection once if Ollama dropped the socket before we
       // streamed anything; otherwise surface the failure.
-      if (attempt === 0 && !emitted && !signal.aborted && isTransientNetErr(e)) {
-        console.log('[api] chat: transient Ollama connection drop, retrying once')
-        await new Promise((r) => setTimeout(r, 150))
+      if (attempt < transientRetries - 1 && !emitted && !signal.aborted && isTransientNetErr(e)) {
+        console.log(`[api] chat: transient Ollama connection drop, retrying (attempt ${attempt + 1}/${transientRetries})`)
+        await new Promise((r) => setTimeout(r, 150 * (attempt + 1)))
         continue
       }
       throw e
@@ -793,6 +1050,14 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
 
     return { content, toolCalls, promptTokens, completionTokens }
   }
+}
+
+// A "not found in the documents" style answer — mirrors the lab's _is_refusal.
+// Markers come from the shared recovery policy; English markers are lowercase,
+// Hebrew is case-insensitive, so lowercasing the text is enough.
+function isRefusal(text, markers) {
+  const low = (text || '').toLowerCase()
+  return markers.some(m => low.includes(m))
 }
 
 // Drive the full multi-step agent loop, writing AI SDK data-stream parts.
@@ -819,8 +1084,22 @@ async function streamChatResponse({ writer, systemPrompt, uiMessages, signal }) 
     const text = uiText(m)
     if (text) messages.push({ role: m.role, content: text })
   }
+  // Ambient question for the semantic supplement in search_content: the latest user
+  // turn (the model only passes short patterns; the question ranks embeddings well).
+  currentQuestion = [...messages].reverse().find(m => m.role === 'user')?.content || ''
+
+  // Loop error-recovery policy — the SAME source of truth the lab reads, so the two
+  // loops recover identically. Historically the app had NONE of this and silently
+  // ended on empty/dropped turns; that was the "answer stops mid-thinking" bug.
+  const rec = AGENT?.runtime?.recovery || {}
+  const recEmpty = rec.empty_turn_nudge || 'Your last reply was empty. Based only on the documents you have read, give your final answer now.'
+  const recFinal = rec.max_steps_final || 'Based only on the documents you have read, give your final answer now.'
+  const recPointer = rec.refusal_pointer_nudge || 'Your last search result was CUT and said more matching lines exist (see its final bracketed note, which names the file). Search that file with path=<that file> and a refined pattern, then answer from what you find.'
+  const recRefusalMarks = rec.refusal_markers || ['not found', 'no information', 'not available', 'does not appear', "couldn't find"]
+  const recPointerMarks = rec.pointer_markers || ['more matching lines in', "refine the pattern or narrow with 'path'"]
 
   let promptTokens = 0, completionTokens = 0
+  let emptyRetry = false, pointerRetry = false, unfollowedPointer = false, answered = false
   for (let step = 0; step < maxSteps; step++) {
     send('start_step', { messageId: `aristo-step-${step}` })
     const turn = await streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, signal })
@@ -839,14 +1118,51 @@ async function streamChatResponse({ writer, systemPrompt, uiMessages, signal }) 
         try { result = capToolResult(await TOOL_IMPLS[tc.name](tc.args)) }
         catch (e) { result = { error: e.message } }
         send('tool_result', { toolCallId: tc.id, result })
-        messages.push({ role: 'tool', content: typeof result === 'string' ? result : JSON.stringify(result) })
+        const resText = typeof result === 'string' ? result : JSON.stringify(result)
+        messages.push({ role: 'tool', content: resText })
+        // A cut search result that named a better file — the model must not conclude
+        // "not found" without following the pointer (see the refusal nudge below).
+        unfollowedPointer = recPointerMarks.some(m => resText.includes(m))
       }
       send('finish_step', { finishReason: 'tool-calls', usage: stepUsage, isContinued: false })
       continue
     }
 
+    // No tool calls: recover a glitchy turn once, else accept the answer.
+    const content = (turn.content || '').trim()
+    if (!content && !emptyRetry) {
+      // Empty turn (a thinking-only turn, a stripped template leak, or a dropped/
+      // num_predict-truncated generation) is NOT an answer — nudge once instead of
+      // ending the message blank. This is the fix for the mid-thinking cutoff.
+      emptyRetry = true
+      messages.push({ role: 'user', content: recEmpty })
+      send('finish_step', { finishReason: 'stop', usage: stepUsage, isContinued: true })
+      continue
+    }
+    if (content && isRefusal(content, recRefusalMarks) && unfollowedPointer && !pointerRetry) {
+      // "Not found" while the last search said more matches exist in a named file —
+      // push it to look there once before accepting the refusal.
+      pointerRetry = true
+      messages.push({ role: 'user', content: recPointer })
+      send('finish_step', { finishReason: 'stop', usage: stepUsage, isContinued: true })
+      continue
+    }
+
     send('finish_step', { finishReason: 'stop', usage: stepUsage, isContinued: false })
+    answered = true
     break
+  }
+
+  // Out of steps (or every turn recovered without a final answer): force one final
+  // answer with tools DISABLED, so the message never ends on a dangling tool call
+  // or blank — mirroring the lab's out-of-steps behaviour.
+  if (!answered) {
+    messages.push({ role: 'user', content: recFinal })
+    send('start_step', { messageId: 'aristo-step-final' })
+    const turn = await streamOneOllamaTurn({ messages, ollamaTools: [], temp, numCtx, send, signal })
+    promptTokens += turn.promptTokens
+    completionTokens += turn.completionTokens
+    send('finish_step', { finishReason: 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens }, isContinued: false })
   }
   send('finish_message', { finishReason: 'stop', usage: { promptTokens, completionTokens } })
 }

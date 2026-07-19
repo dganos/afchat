@@ -13,7 +13,9 @@ This mirrors real "QA over documents": the model must navigate and read files it
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import math
 import re
 import urllib.request
 from dataclasses import dataclass, field
@@ -91,6 +93,47 @@ def _scan_roots(base: Path, path) -> "list[Path] | str":
 _HEADING_RE = re.compile(r"#{1,6}\s")
 
 
+def _corpus_catalog(base: Path) -> str:
+    """One catalog line per document: filename — title: first section headings.
+
+    This is what list_directory returns to the model. A bare file listing forces
+    the model to pick among 32 files by NAME alone (blind doc selection — the
+    dominant failure mode); the catalog shows each document's `# ` title and its
+    first 6 `## ` headings so selection becomes reading, not guessing. Capped
+    per line (long/garbled headings exist) so 32 files stay well under the
+    tool-result char cap. MUST mirror chat.js corpusCatalog exactly (SAME AGENT
+    rule).
+    """
+    lines: list[str] = []
+    for f in sorted(base.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(base).as_posix()
+        try:
+            doc = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:  # noqa: BLE001
+            lines.append(rel)
+            continue
+        title = ""
+        secs: list[str] = []
+        for l in doc:
+            ls = l.lstrip()
+            if not title and ls.startswith("# "):
+                title = " ".join(ls[2:].split())
+            elif ls.startswith("## "):
+                secs.append(" ".join(ls[3:].split()))
+        line = rel + (" — " + title[:80] if title else "")
+        if secs:
+            shown = "; ".join(secs[:6])
+            if len(shown) > 180:
+                shown = shown[:180] + "…"
+            line += ": " + shown
+            if len(secs) > 6:
+                line += f" (+{len(secs) - 6} more)"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _block_indices(lines: list[str], i: int, cap: int = 40) -> list[int]:
     """The line indices of the structural block enclosing match line i.
 
@@ -131,6 +174,54 @@ def _block_indices(lines: list[str], i: int, cap: int = 40) -> list[int]:
             idx.insert(0, j)
             break
     return idx
+
+
+def _rank_blocks(blocks: list[dict], terms: list[str], k1: float = 1.2, b: float = 0.25) -> list[dict]:
+    """Reorder matched blocks by BM25 relevance to the query terms.
+
+    The old ordering was match-count-per-FILE, then line order within a file — so a
+    chatty file with many incidental hits outranked the file holding the one dense
+    table row that answers the question, and within a scoped single-file search the
+    answer block was emitted in line order (often after the block that fits the
+    result budget). BM25 scores each BLOCK: a block wins by containing more of the
+    query's DISTINCT terms and its RARER terms (idf), with only mild length
+    normalization (b=0.25) so answer-rich tables aren't penalized for being long.
+
+    Determinism (SAME AGENT rule): tf is the non-overlapping substring count on the
+    block's mark-stripped, lowercased CONTENT (never the "file:line:" prefixes); the
+    score loop iterates `terms` in order so float accumulation matches JS exactly;
+    the sort key rounds the score with floor(x*1e6+0.5)/1e6 (identical in both
+    languages, and coarse enough to erase any libm last-ULP difference), then breaks
+    ties by distinct-term coverage, then original position. MUST mirror chat.js
+    rankBlocks exactly.
+    """
+    n = len(blocks)
+    lens: list[int] = []
+    tfs: list[dict] = []
+    for blk in blocks:
+        raw = _strip_marks(blk["raw"].lower())
+        toks = raw.split()
+        lens.append(max(1, len(toks)))
+        tf = {t: raw.count(t) for t in terms if raw.count(t)}
+        tfs.append(tf)
+    avg = sum(lens) / n
+    df = {t: sum(1 for tf in tfs if t in tf) for t in terms}
+    scores: list[float] = []
+    for i in range(n):
+        s = 0.0
+        for t in terms:  # fixed order → identical float accumulation across runtimes
+            c = tfs[i].get(t, 0)
+            if not c:
+                continue
+            idf = math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5))
+            s += idf * (c * (k1 + 1)) / (c + k1 * (1 - b + b * lens[i] / avg))
+        scores.append(s)
+
+    def key(i: int):
+        s6 = math.floor(scores[i] * 1e6 + 0.5) / 1e6
+        return (-s6, -len(tfs[i]), i)
+
+    return [blocks[i] for i in sorted(range(n), key=key)]
 
 
 def _grep_corpus(
@@ -193,15 +284,15 @@ def _grep_corpus(
 
     sep = "\n\n" if (smart or context) else "\n"
 
-    def scan(active: list[str]) -> list[tuple[int, list[str]]]:
-        per_file: list[tuple[int, list[str]]] = []  # (match_count, blocks) per file
+    def scan(active: list[str]) -> list[tuple[int, list[dict]]]:
+        per_file: list[tuple[int, list[dict]]] = []  # (match_count, blocks) per file
         for f in files:
             try:
                 lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
             except Exception:  # noqa: BLE001
                 continue
             rel = f.relative_to(base).as_posix()
-            fblocks: list[str] = []
+            fblocks: list[dict] = []  # each: {"disp": shown text, "raw": content for scoring}
             extra = 0  # matching lines beyond this file's block budget
             last_end = -1  # last line already emitted for this file (smart mode dedupe)
             for i, line in enumerate(lines):  # 0-based
@@ -218,17 +309,21 @@ def _grep_corpus(
                     last_end = idx[-1]
                 else:
                     idx = list(range(i, min(len(lines), i + 1 + context)))
-                fblocks.append("\n".join(f"{rel}:{j + 1}: {clip(lines[j])}" for j in idx))
+                fblocks.append({
+                    "disp": "\n".join(f"{rel}:{j + 1}: {clip(lines[j])}" for j in idx),
+                    "raw": "\n".join(lines[j] for j in idx),
+                })
             if not fblocks:
                 continue
             if extra:
-                fblocks[-1] += (
+                fblocks[-1]["disp"] += (
                     f'\n[+{extra} more matching lines in {rel} — search with path="{rel}" to see them]'
                 )
             per_file.append((len(fblocks) + extra, fblocks))
         return per_file
 
     note = ""
+    active = needles
     per_file = scan(needles)
     if not per_file and any(" " in n for n in needles):
         # A multi-word phrase almost never matches as a literal substring (models
@@ -237,24 +332,35 @@ def _grep_corpus(
         words = list(dict.fromkeys(w for n in needles for w in n.split() if len(w) >= 2))
         if words:
             per_file = scan(words)
+            active = words
             note = ("[no lines matched the exact phrase; showing lines matching its "
                     "individual words instead]\n\n")
     if not per_file:
         shown = " / ".join(f'"{n}"' for n in needles)
         return f"No lines containing {shown} were found in the documents."
-    # Most-matching files first: relevance order, never alphabetical order.
-    per_file.sort(key=lambda t: -t[0])
-    blocks = [b for _, fblocks in per_file for b in fblocks]
+    # Order blocks by BM25 relevance to the query terms, but ONLY for a WIDE
+    # (locator) search — there it replaces the crude match-count-per-file order
+    # (a chatty file's incidental hits outranking the one dense answer block).
+    # A SCOPED search means the model already narrowed to a file: its natural line
+    # order preserves structural context (a table read top-to-bottom, thresholds
+    # in sequence) that reranking would scramble — so scoped searches keep the old
+    # order. The "## " table-of-contents idiom always keeps document order.
+    if wide and not toc and sum(len(fb) for _, fb in per_file) > 1:
+        blocks = _rank_blocks([b for _, fb in per_file for b in fb], active)
+    else:
+        per_file.sort(key=lambda t: -t[0])
+        blocks = [b for _, fb in per_file for b in fb]
     # Emit whole blocks up to a LINE budget (fits the tool-result char cap), so a
     # too-broad search ends with an explicit "+N more" instead of a mid-block chop
     # that silently hides every later match.
     out: list[str] = []
     used = 0
     for b in blocks:
-        n_lines = b.count("\n") + 1
+        disp = b["disp"]
+        n_lines = disp.count("\n") + 1
         if out and (used + n_lines > 110 or len(out) >= max_matches):
             break
-        out.append(b)
+        out.append(disp)
         used += n_lines
     text = note + sep.join(out)
     if len(out) < len(blocks):
@@ -263,6 +369,165 @@ def _grep_corpus(
             f"or narrow with 'path' to see the rest]"
         )
     return text
+
+
+# ── Semantic retrieval (local embeddings) ─────────────────────────────────────
+# Lexical substring search cannot bridge a cross-language wording gap: the answer
+# may be written in Latin ("...ACCUMULATOR...2800 PSI") while the question asks in
+# Hebrew ("מצבר"), so grep returns the wrong-but-lexically-matching block and the
+# fact is never seen. A local embedding model (bge-m3 via Ollama — open, on-device)
+# maps meaning to vectors, so the answer block ranks near the QUESTION regardless of
+# language, with NO hand-built vocabulary. This complements grep: grep stays primary
+# (exact for numbers/codes), embeddings rescue the term-mismatch cases as a labelled
+# supplement. The semantic query is the QUESTION (short grep patterns embed too
+# noisily to rank reliably).
+_EMBED_MODEL = "bge-m3"
+_EMBED_MAX_CHARS = 1600  # cap per input: bge-m3 has a token limit; a huge table 400s
+_EMBED_BASE = "http://localhost:11434"
+_SEM_TOPK = 3            # semantic passages to append
+_SEM_MIN_COS = 0.45      # below this the match is too weak to be worth showing
+
+# Ambient question for the CURRENT answer turn, set by answer_question_ollama. The
+# model calls search_content with a short pattern; the semantic supplement instead
+# ranks against this full question. Not a tool argument — the harness supplies it.
+_CURRENT_QUESTION: str = ""
+
+# Per-corpus block index: [{file, line, disp, raw, vec}], built once and cached to
+# disk (keyed by corpus signature + model) so we embed the corpus a single time.
+_BLOCK_INDEX: "dict[str, list[dict]]" = {}
+_QV_CACHE: "dict[str, list[float]]" = {}  # question -> its embedding (per-question memo)
+
+
+def _embed(texts: list[str]) -> "list[list[float]]":
+    """Embed texts with the local bge-m3 model via Ollama /api/embed (batched)."""
+    out: list[list[float]] = []
+    capped = [(t[:_EMBED_MAX_CHARS] if len(t) > _EMBED_MAX_CHARS else t) or " " for t in texts]
+    for k in range(0, len(capped), 32):
+        batch = capped[k:k + 32]
+        req = urllib.request.Request(
+            _EMBED_BASE.rstrip("/") + "/api/embed",
+            data=json.dumps({"model": _EMBED_MODEL, "input": batch}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=120) as r:
+            out.extend(json.loads(r.read())["embeddings"])
+    return out
+
+
+def _chunk_doc(lines: list[str]) -> "list[tuple[int, str]]":
+    """Segment a document into structural blocks: (1-based start line, raw text).
+
+    Same structure notion as _block_indices but applied EXHAUSTIVELY (non-overlapping
+    coverage, not around a match): each contiguous markdown table is a block; each
+    contiguous non-blank paragraph is a block; the nearest preceding heading (<=60
+    lines) is prepended as a breadcrumb so the block carries its section context.
+    """
+    blocks: list[tuple[int, str]] = []
+    i, n = 0, len(lines)
+    while i < n:
+        if not lines[i].strip():
+            i += 1
+            continue
+        s = i
+        if lines[i].lstrip().startswith("|"):
+            while i + 1 < n and lines[i + 1].lstrip().startswith("|"):
+                i += 1
+        else:
+            while i + 1 < n and lines[i + 1].strip():
+                i += 1
+        e = i
+        head = None
+        for j in range(s - 1, max(-1, s - 61), -1):
+            if _HEADING_RE.match(lines[j].lstrip()):
+                head = lines[j]
+                break
+        raw = "\n".join(([head] if head else []) + lines[s:e + 1])
+        blocks.append((s + 1, raw))
+        i = e + 1
+    return blocks
+
+
+def _build_block_index(base: Path) -> list[dict]:
+    """Chunk + embed the whole corpus once; cache vectors to disk by signature."""
+    key = str(base)
+    if key in _BLOCK_INDEX:
+        return _BLOCK_INDEX[key]
+    files = sorted(f for f in base.rglob("*") if f.is_file())
+    raw_blocks: list[dict] = []
+    for f in files:
+        rel = f.relative_to(base).as_posix()
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:  # noqa: BLE001
+            continue
+        for ln, raw in _chunk_doc(lines):
+            disp = "\n".join(f"{rel}:{ln + off}: {t}" for off, t in enumerate(raw.split("\n")))
+            raw_blocks.append({"file": rel, "line": ln, "disp": disp, "raw": raw})
+    sig = hashlib.sha1(
+        (_EMBED_MODEL + "\x00" + "\x00".join(b["raw"] for b in raw_blocks)).encode("utf-8")
+    ).hexdigest()
+    # Cache OUTSIDE the corpus dir — a file under `base` would be picked up by every
+    # corpus scan (catalog, grep, this very index) as a spurious 27 MB "document".
+    cache = base.parent / f".embed_cache_{base.name}_{_EMBED_MODEL.replace(':', '_')}.json"
+    vecs: "list[list[float]] | None" = None
+    if cache.exists():
+        try:
+            cached = json.loads(cache.read_text())
+            if cached.get("sig") == sig:
+                vecs = cached["vecs"]
+        except Exception:  # noqa: BLE001
+            vecs = None
+    if vecs is None:
+        vecs = _embed([b["raw"] for b in raw_blocks])
+        try:
+            cache.write_text(json.dumps({"sig": sig, "vecs": vecs}))
+        except Exception:  # noqa: BLE001
+            pass
+    for b, v in zip(raw_blocks, vecs):
+        b["vec"] = v
+    _BLOCK_INDEX[key] = raw_blocks
+    return raw_blocks
+
+
+def _cosine(a: list, b: list) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def _semantic_supplement(base: Path, question: str, scope_rels: "set[str] | None") -> str:
+    """Top semantic passages for the question, as a labelled supplement (or "").
+
+    Ranks the pre-embedded corpus blocks by cosine to the QUESTION, restricted to
+    `scope_rels` when the search was path-scoped. Returns only passages above a
+    similarity floor, so a question with no semantically-close block adds nothing.
+    """
+    if not question:
+        return ""
+    try:
+        index = _build_block_index(base)
+        qv = _QV_CACHE.get(question)
+        if qv is None:
+            qv = _embed([question])[0]  # cache: the model calls search_content repeatedly per question
+            _QV_CACHE[question] = qv
+    except Exception:  # noqa: BLE001
+        return ""  # embeddings unavailable → silently fall back to lexical only
+    cand = [b for b in index if scope_rels is None or b["file"] in scope_rels]
+    # Round with floor(x*1e6+0.5)/1e6 (identical in JS) so the JS app ranks the same.
+    scored = sorted(
+        ((math.floor(_cosine(qv, b["vec"]) * 1e6 + 0.5) / 1e6, i, b) for i, b in enumerate(cand)),
+        key=lambda t: (-t[0], t[1]),
+    )
+    picks = [(s, b) for s, i, b in scored[:_SEM_TOPK] if s >= _SEM_MIN_COS]
+    if not picks:
+        return ""
+    body = "\n\n".join(b["disp"] for _, b in picks)
+    return (
+        "\n\n[Related passages by MEANING (semantic search on the question — the "
+        "wording may differ from your search terms; verify the value before using):]\n\n"
+        + body
+    )
 
 
 def load_fs_server_params(corpus_dir: str) -> StdioServerParameters:
@@ -295,12 +560,28 @@ async def _dispatch_tool(
             out = _grep_corpus(
                 corpus_dir or ".", args.get("pattern", ""), args.get("path"), args.get("context")
             )
+            # Append semantic passages for the ambient QUESTION — rescues cross-language
+            # wording gaps grep can't bridge. Scope to the same path if the search was
+            # path-scoped. Best-effort: any failure leaves the lexical result untouched.
+            if corpus_dir and _CURRENT_QUESTION:
+                try:
+                    base = Path(corpus_dir).resolve()
+                    roots = _scan_roots(base, args.get("path"))
+                    scope = None
+                    if not isinstance(roots, str) and args.get("path"):
+                        scope = {f.relative_to(base).as_posix() for f in roots if f.is_file()}
+                    out += _semantic_supplement(base, _CURRENT_QUESTION, scope)
+                except Exception:  # noqa: BLE001
+                    pass
         elif name == "list_directory" and corpus_dir:
-            # Normalize the path before forwarding: models pass ".", "./corpus_124",
-            # or other guesses; the MCP server errors on those, and a model that
-            # never gets a file listing concludes "there are no documents"
-            # (observed). Any path that doesn't resolve to a real directory under
-            # the corpus falls back to the corpus root — mirroring Aristo.
+            # Harness-implemented (never forwarded to the MCP server): returns the
+            # corpus CATALOG — one line per file with title + main headings — so
+            # document selection is reading, not name-guessing. Path normalization
+            # kept from the old forwarding version: models pass ".", "./corpus_124",
+            # or other guesses, and a model that never gets a listing concludes
+            # "there are no documents" (observed). Any path that doesn't resolve
+            # to a real directory under the corpus falls back to the corpus root —
+            # mirroring Aristo.
             base = Path(corpus_dir).resolve()
             p = str(args.get("path") or "").strip()
             target = (Path(p) if Path(p).is_absolute() else base / p).resolve() if p else base
@@ -310,8 +591,7 @@ async def _dispatch_tool(
                 target = base
             if not target.is_dir():
                 target = base
-            res = await session.call_tool(name, {**args, "path": str(target)})
-            out = "\n".join(getattr(b, "text", None) or str(b) for b in res.content)
+            out = _corpus_catalog(target)
         else:
             res = await session.call_tool(name, args)
             parts = []
@@ -463,9 +743,13 @@ async def answer_question_claude(
             return result
 
 
-# A "not found in the documents" style answer, in the lab's two languages. Used
-# by the pointer nudge below — heuristic on purpose, only ever triggers ONE extra
-# clarifying turn, never changes scoring.
+# DEFAULTS ONLY — the live values come from the agent package's runtime.recovery
+# policy (the single source of truth shared with Aristo). These fallbacks preserve
+# behaviour if a package predates the recovery block.
+#
+# A "not found in the documents" style answer, in the lab's two languages. Used by
+# the pointer nudge — heuristic on purpose, only ever triggers ONE extra clarifying
+# turn, never changes scoring.
 _REFUSAL_MARKS = (
     "לא נמצא", "לא נמצאו", "אינו מופיע", "אינם מופיעים", "אין מידע", "אינו נמצא",
     "not found", "no information", "not available", "does not appear", "couldn't find",
@@ -475,9 +759,9 @@ _REFUSAL_MARKS = (
 _POINTER_MARKS = ("more matching lines in", "refine the pattern or narrow with 'path'")
 
 
-def _is_refusal(text: str) -> bool:
+def _is_refusal(text: str, markers=_REFUSAL_MARKS) -> bool:
     low = (text or "").lower()
-    return any(m in low for m in _REFUSAL_MARKS)
+    return any(m in low for m in markers)
 
 
 # ── Candidate: local model via Ollama's native /api/chat ───────────────────────
@@ -581,12 +865,32 @@ async def answer_question_ollama(
         if on_event:
             on_event(*a)
 
+    # Make the full question available to the semantic supplement in search_content
+    # (the model only passes short patterns; the question ranks embeddings reliably).
+    global _CURRENT_QUESTION
+    _CURRENT_QUESTION = question
+
     corpus_dir = str(Path(corpus_dir).resolve())
     cap = int(cfg.get("max_tool_result_chars", 6000))
     max_steps = int(cfg.get("max_steps", 8))
     temperature = float(cfg.get("temperature", 0))
     timeout = int(cfg.get("request_timeout_s", 180))
     num_predict = int(cfg.get("num_predict", 0))
+    # Loop error-recovery policy from the shared package (SAME AGENT as Aristo).
+    # Defaults preserve behaviour for a package without a recovery block.
+    rec = cfg.get("recovery") or {}
+    rec_transient = int(rec.get("transient_retries", 3))
+    rec_empty = rec.get("empty_turn_nudge",
+                        "Your last reply was empty. Based only on the documents you have read, "
+                        "give your final answer now.")
+    rec_final = rec.get("max_steps_final",
+                        "Based only on the documents you have read, give your final answer now.")
+    rec_pointer = rec.get("refusal_pointer_nudge",
+                          "Your last search result was CUT and said more matching lines exist "
+                          "(see its final bracketed note, which names the file). Search that file "
+                          "with path=<that file> and a refined pattern, then answer from what you find.")
+    rec_refusal_markers = rec.get("refusal_markers", _REFUSAL_MARKS)
+    rec_pointer_markers = rec.get("pointer_markers", _POINTER_MARKS)
 
     if not system_prompt:
         raise ValueError("system_prompt is required (provided by the agent package)")
@@ -602,6 +906,7 @@ async def answer_question_ollama(
         return await _ollama_chat_retry(
             emit, base_url, model, messages,
             tools if use_tools else None, num_ctx, temperature, timeout, think, num_predict,
+            attempts=rec_transient,
         )
 
     unfollowed_pointer = False  # last search result was cut and carried a "+N more" pointer
@@ -624,7 +929,7 @@ async def answer_question_ollama(
             result.tool_calls.append({"name": name, "args": args, "chars": len(output)})
             emit("tool_result", name, len(output))
             messages.append({"role": "tool", "content": output, "tool_name": name})
-            unfollowed_pointer = any(m in output for m in _POINTER_MARKS)
+            unfollowed_pointer = any(m in output for m in rec_pointer_markers)
 
     empty_retry = False
     pointer_retry = False
@@ -654,20 +959,14 @@ async def answer_question_ollama(
                 # An empty turn is not an answer (e.g. a stripped template leak or a
                 # dropped generation) — nudge once instead of scoring "" as a 0.
                 empty_retry = True
-                messages.append({"role": "user", "content":
-                                 "Your last reply was empty. Based only on the documents "
-                                 "you have read, give your final answer now."})
+                messages.append({"role": "user", "content": rec_empty})
                 continue
-            if content and _is_refusal(content) and unfollowed_pointer and not pointer_retry:
+            if content and _is_refusal(content, rec_refusal_markers) and unfollowed_pointer and not pointer_retry:
                 # The model says "not found" while its LAST search result explicitly
                 # said more matches exist in a named file. Push it to look there
                 # once before accepting the refusal.
                 pointer_retry = True
-                messages.append({"role": "user", "content":
-                                 "Your last search result was CUT and said more matching "
-                                 "lines exist (see its final bracketed note, which names "
-                                 "the file). Search that file with path=<that file> and a "
-                                 "refined pattern, then answer from what you find."})
+                messages.append({"role": "user", "content": rec_pointer})
                 continue
             result.answer = content
             result.finish = "answered"
@@ -675,8 +974,7 @@ async def answer_question_ollama(
         await run_calls(tool_calls)
 
     # Out of steps: ask for a final answer with no tools.
-    messages.append({"role": "user",
-                     "content": "Based only on the documents you have read, give your final answer now."})
+    messages.append({"role": "user", "content": rec_final})
     emit("speak_start", "final")
     try:
         resp = await chat(False)

@@ -33,3 +33,7 @@ afchat_lab/*.pdf
 # weights (~4.8 GB) are NOT in git — too large for free LFS; obtained per-machine.
 resources/models
 resources/ollama
+
+# Generated local embedding caches (bge-m3 vectors) — regenerated on demand
+.embed_cache_*.json
+**/.embed_cache_*.json
