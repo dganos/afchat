@@ -381,11 +381,28 @@ def _grep_corpus(
 # (exact for numbers/codes), embeddings rescue the term-mismatch cases as a labelled
 # supplement. The semantic query is the QUESTION (short grep patterns embed too
 # noisily to rank reliably).
+# DEFAULTS ONLY — id/max_chars/top_k come from the agent package's `embed_model`
+# block via configure_embeddings() (SAME AGENT as Aristo); these values apply only
+# if a package omits the block. MUST mirror api/chat.js's EMBED_* constants.
 _EMBED_MODEL = "bge-m3"
 _EMBED_MAX_CHARS = 1600  # cap per input: bge-m3 has a token limit; a huge table 400s
 _EMBED_BASE = "http://localhost:11434"
 _SEM_TOPK = 3            # semantic passages to append
 _SEM_MIN_COS = 0.45      # below this the match is too weak to be worth showing
+
+
+def configure_embeddings(embed_cfg: "dict | None") -> None:
+    """Set the semantic-retrieval knobs from the agent package's `embed_model` block.
+
+    Called once per run by the harness so the lab uses the SAME embedding model and
+    caps as Aristo. A package without the block keeps the built-in defaults above.
+    """
+    global _EMBED_MODEL, _EMBED_MAX_CHARS, _SEM_TOPK
+    if not embed_cfg:
+        return
+    _EMBED_MODEL = embed_cfg.get("id", _EMBED_MODEL)
+    _EMBED_MAX_CHARS = int(embed_cfg.get("max_input_chars", _EMBED_MAX_CHARS))
+    _SEM_TOPK = int(embed_cfg.get("top_k", _SEM_TOPK))
 
 # Ambient question for the CURRENT answer turn, set by answer_question_ollama. The
 # model calls search_content with a short pattern; the semantic supplement instead

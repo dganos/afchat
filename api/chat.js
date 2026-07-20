@@ -469,10 +469,13 @@ function rankBlocks(blocks, terms, k1 = 1.2, b = 0.25) {
 // regardless of language, with NO hand-built vocabulary. Complements grep: grep
 // stays primary (exact for numbers/codes), embeddings rescue term-mismatch cases
 // as a labelled supplement. MUST mirror afchat_lab's semantic code (SAME AGENT).
-// NOTE: requires the bundled Ollama to have the bge-m3 model available.
-const EMBED_MODEL = 'bge-m3'
-const EMBED_MAX_CHARS = 1600  // cap per input: bge-m3 token limit; a huge table 400s
-const SEM_TOPK = 3
+// The model id + knobs come from the agent package's `embed_model` block (single
+// source of truth shared with the lab) — not hardcoded here. NOTE: requires the
+// bundled Ollama to have this model staged; the bundle build verifies it.
+const EMBED_CFG = AGENT?.embed_model || {}
+const EMBED_MODEL = EMBED_CFG.id || 'bge-m3'
+const EMBED_MAX_CHARS = EMBED_CFG.max_input_chars || 1600  // cap per input: bge-m3 token limit; a huge table 400s
+const SEM_TOPK = EMBED_CFG.top_k || 3
 const SEM_MIN_COS = 0.45
 // Ambient question for the CURRENT turn (set by streamChatResponse). The model
 // calls search_content with a short pattern; the supplement ranks against this

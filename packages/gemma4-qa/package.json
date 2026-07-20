@@ -1,12 +1,19 @@
 {
   "name": "gemma4-qa",
-  "version": 8,
+  "version": 9,
   "description": "QA over a document corpus. The model is not handed the documents — it must use read-only filesystem tools to find and read the right passage, then answer grounded in the text. Single source of truth for both afchat_lab (Python) and the Aristo app (JS): both load this package and supply only the tool implementations for their runtime.",
 
   "model": {
     "id": "gemma-4-e4b:latest",
     "label": "gemma-4-e4b",
     "context_length": 32768
+  },
+
+  "_comment_embed_model": "Local embedding model for the semantic-retrieval supplement in search_content (rescues cross-language term-mismatch cases grep misses). Open, on-device via the bundled Ollama. Declared here — NOT hardcoded in the loop code — so lab and app read the SAME id/knobs and the bundle build can verify it is staged. A second model the bundle MUST ship alongside model.id.",
+  "embed_model": {
+    "id": "bge-m3",
+    "max_input_chars": 1600,
+    "top_k": 3
   },
 
   "runtime": {

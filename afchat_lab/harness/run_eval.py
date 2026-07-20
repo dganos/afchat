@@ -30,6 +30,7 @@ from harness import judge as judging
 from harness.agent import (
     answer_question_claude,
     answer_question_ollama,
+    configure_embeddings,
     load_fs_server_params,
     ollama_capabilities,
 )
@@ -238,6 +239,9 @@ async def run(args: argparse.Namespace) -> None:
     # entirely from the agent package, the single source of truth shared with Aristo.
     pkg = load_package((LAB / cfg["package"]).resolve())
     print(f"Agent package: {pkg.summary()}")
+    # Semantic-retrieval knobs (embed model id + caps) from the package — SAME AGENT
+    # as Aristo. Candidates extend production and inherit the same embed_model.
+    configure_embeddings(pkg.embed_model)
     pkg_tools = openai_tools(pkg)
     pkg_ctx = int(pkg.model.get("context_length", 8192))
     _timeout = cfg.get("ollama", {}).get("request_timeout_s", 180)

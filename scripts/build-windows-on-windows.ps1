@@ -200,23 +200,36 @@ $buildCfg = (Get-Content (Join-Path $Root 'package.json') -Raw | ConvertFrom-Jso
 if (-not ($buildCfg.files -contains 'packages/**/*')) {
   Die 'package.json build.files is missing "packages/**/*" — the agent package would not be bundled. Add it and re-run.'
 }
-$modelId = (Get-Content (Join-Path $PkgDir 'package.json') -Raw | ConvertFrom-Json).model.id
+$pkgJson  = Get-Content (Join-Path $PkgDir 'package.json') -Raw | ConvertFrom-Json
+$modelId  = $pkgJson.model.id
+# The agent ALSO uses an embedding model (semantic-retrieval supplement) declared in
+# the package's `embed_model` block. It is a SECOND model the bundle must ship — the
+# app hardcodes nothing, so if it isn't staged the semantic feature silently no-ops.
+$embedId  = $pkgJson.embed_model.id
+
+# Confirm a model id has a staged manifest in resources\models; Warn (don't Die) if not.
+function Test-ModelStaged {
+  param([string]$Id, [string]$Kind)
+  if (-not $Id) { return }
+  $n, $t = $Id -split ':', 2
+  if (-not $t) { $t = 'latest' }
+  $mf = Join-Path $ModelsDir ("manifests\registry.ollama.ai\library\{0}\{1}" -f $n, $t)
+  if (Test-Path $mf) { Ok ("{0} model staged: {1}" -f $Kind, $Id) }
+  else {
+    Warn "$Kind model '$Id' not found in resources\models (looked for $mf)."
+    Warn "  Stage it with: OLLAMA_MODELS=$ModelsDir ollama pull $Id"
+  }
+}
 
 # Staged runtime resources (gitignored — must be present locally before building).
 if (-not (Test-Path $DocsDir) -or -not (Get-ChildItem $DocsDir -File -Recurse -ErrorAction SilentlyContinue)) {
   Warn "resources\documents is empty — the bundle will ship with NO documents to answer from."
 }
 if (-not (Test-Path (Join-Path $ModelsDir 'blobs'))) { Die "no model store at $ModelsDir (need blobs\ + manifests\)." }
-# Confirm the model the agent package expects is actually staged.
-$name, $tag = $modelId -split ':', 2
-if (-not $tag) { $tag = 'latest' }
-$manifest = Join-Path $ModelsDir ("manifests\registry.ollama.ai\library\{0}\{1}" -f $name, $tag)
-if (-not (Test-Path $manifest)) {
-  Warn "agent package model '$modelId' not found in resources\models (looked for $manifest)."
-  Warn "The app will load the package but find no matching model installed. Stage it with: ollama pull $modelId (with OLLAMA_MODELS=$ModelsDir)."
-}
+Test-ModelStaged -Id $modelId -Kind 'agent'       # required: no model => every question 503-degrades
+Test-ModelStaged -Id $embedId -Kind 'embedding'   # supplement: missing => semantic retrieval no-ops
 
-Info "Build plan: model='$modelId', docs='$DocsDir', out='$Dist'"
+Info "Build plan: model='$modelId', embed='$embedId', docs='$DocsDir', out='$Dist'"
 
 # ── 1. Windows ollama runtime (CPU-only) ──────────────────────────────────────
 Info '[1/5] Preparing Windows ollama runtime'

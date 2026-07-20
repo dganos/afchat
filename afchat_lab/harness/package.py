@@ -36,6 +36,7 @@ class AgentPackage:
     system_prompt: str
     dir: Path
     version: int = 1
+    embed_model: "dict | None" = None   # {id, max_input_chars, top_k} for semantic retrieval
 
     @property
     def tool_names(self) -> list[str]:
@@ -61,12 +62,12 @@ def load_package(path: str | Path) -> AgentPackage:
     p = Path(path)
     pkg_json = p / "package.json" if p.is_dir() else p
     pkg_dir = pkg_json.parent
-    d = json.loads(pkg_json.read_text())
+    d = json.loads(pkg_json.read_text(encoding="utf-8"))
 
     base: AgentPackage | None = None
     if d.get("extends"):
         base_path = (pkg_dir / d["extends"]).resolve()
-        base_d = json.loads((base_path / "package.json" if base_path.is_dir() else base_path).read_text())
+        base_d = json.loads((base_path / "package.json" if base_path.is_dir() else base_path).read_text(encoding="utf-8"))
         if base_d.get("extends"):
             raise ValueError(f"package {pkg_json}: extends chains are not allowed (base also extends)")
         base = load_package(base_path)
@@ -74,6 +75,7 @@ def load_package(path: str | Path) -> AgentPackage:
     model = d.get("model") or (base.model if base else None)
     tools = d.get("tools") or (base.tools if base else None)
     runtime = {**(base.runtime if base else {}), **d.get("runtime", {})}
+    embed_model = d.get("embed_model") or (base.embed_model if base else None)
 
     missing = [k for k, v in (("name", d.get("name")), ("model", model), ("tools", tools)) if not v]
     if not d.get("system_prompt_file") and base is None:
@@ -84,7 +86,7 @@ def load_package(path: str | Path) -> AgentPackage:
         raise ValueError(f"package {pkg_json}: model.id is required")
 
     if d.get("system_prompt_file"):
-        system_prompt = (pkg_dir / d["system_prompt_file"]).read_text().strip()
+        system_prompt = (pkg_dir / d["system_prompt_file"]).read_text(encoding="utf-8").strip()
     else:
         system_prompt = base.system_prompt
 
@@ -97,6 +99,7 @@ def load_package(path: str | Path) -> AgentPackage:
         tools=tools,
         system_prompt=system_prompt,
         dir=pkg_dir,
+        embed_model=embed_model,
     )
 
 
