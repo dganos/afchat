@@ -19,7 +19,10 @@ const ollama = spawn(OLLAMA_BIN, ['serve'], {
     // supplement doesn't evict/reload the chat model each search (see main.js).
     OLLAMA_MAX_LOADED_MODELS: '2',
     // Flash Attention — faster decode/prefill on Apple Silicon; off by default.
-    OLLAMA_FLASH_ATTENTION: '1'
+    OLLAMA_FLASH_ATTENTION: '1',
+    // q8_0 KV cache (needs Flash Attention): ~lossless, halves the 32k KV footprint,
+    // ~+9–18% gen tok/s and removes swap stalls on RAM-tight machines. See main.js.
+    OLLAMA_KV_CACHE_TYPE: 'q8_0'
   }
 })
 ollama.stdout.on('data', d => console.log('[ollama]', d.toString().trimEnd()))

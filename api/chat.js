@@ -56,6 +56,15 @@ const { loadPackage, resolveOllamaModel } = require('./agent-package')
 const OLLAMA_PORT = process.env.ARISTO_OLLAMA_PORT || '11435'
 const OLLAMA_BASE = `http://localhost:${OLLAMA_PORT}`
 
+// Optional per-machine CPU thread override → Ollama's options.num_thread. LEFT
+// UNSET by default: Ollama's own default (≈ half the logical cores) is already
+// near-optimal, and the best value is hardware-specific — on a hybrid CPU
+// (few fast P-cores + many slow E-cores) OVER-subscribing the E-cores REGRESSES
+// generation (measured: 10–12 threads dropped an i7-1255U from ~8 to ~5 tok/s,
+// while 8 was best). So we never bake in a number; tune it per target machine
+// with the aristo-tps-bench skill and set ARISTO_NUM_THREAD only if it wins there.
+const NUM_THREAD = parseInt(process.env.ARISTO_NUM_THREAD, 10) || undefined
+
 // The model is the one pinned by the agent package, served from the bundled
 // models directory. It is resolved lazily on the first request because the
 // bundled Ollama may not be up yet when this module loads. We never auto-select
@@ -1001,7 +1010,7 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
           // num_predict comes from the shared agent package (same knob the lab
           // runs with — the lab must behave exactly like Aristo): bounds a
           // runaway generation instead of letting it run until abort/timeout.
-          options: { temperature: temp, num_ctx: numCtx, num_predict: AGENT?.runtime?.num_predict || undefined },
+          options: { temperature: temp, num_ctx: numCtx, num_predict: AGENT?.runtime?.num_predict || undefined, num_thread: NUM_THREAD },
         }),
         signal,
       })
@@ -1743,7 +1752,7 @@ async function warmUpModel() {
         tools: ollamaTools.length ? ollamaTools : undefined,
         stream: false,
         keep_alive: -1,
-        options: { num_ctx: AGENT?.model?.context_length || undefined },
+        options: { num_ctx: AGENT?.model?.context_length || undefined, num_thread: NUM_THREAD },
       }),
     })
     if (r.ok) {

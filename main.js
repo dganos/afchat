@@ -72,6 +72,13 @@ function startOllama() {
       // Flash Attention: faster decode (~+15%) and prefill on Apple Silicon, and
       // it is off by default in Ollama. Measured net win for our doc-QA workload.
       OLLAMA_FLASH_ATTENTION: '1',
+      // Quantize the KV cache to q8_0 (requires Flash Attention, above). Halves the
+      // KV footprint of the 32k window; q8_0 is effectively lossless. Measured on a
+      // CPU-only i7-1255U at the real 32k config: ~+9–18% generation tok/s AND it
+      // removes the memory-pressure swap stalls that otherwise crater a run to ~1
+      // tok/s — the decisive win on RAM-tight targets (the 8 GB air-gapped box).
+      // Bench: afchat_lab/scripts/bench_aristo_tps.py (see aristo-tps-bench skill).
+      OLLAMA_KV_CACHE_TYPE: 'q8_0',
       // Keep the (single) model resident indefinitely so an idle pause never
       // triggers a cold reload mid-session. The API server warms it up at startup
       // so the first question is fast too. before-quit unloads it.
