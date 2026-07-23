@@ -9,6 +9,13 @@ const DOCS_PATH = path.join(__dirname, 'resources', 'documents')
 // serving only the bundled models — the app must never touch a system Ollama.
 const OLLAMA_PORT = process.env.ARISTO_OLLAMA_PORT || '11435'
 
+// KV-cache type is HARDWARE-DEPENDENT (see main.js): q8_0 wins on RAM-tight CPU-only
+// targets but regresses generation ~48% on Apple Silicon (Metal dequantizes the KV
+// cache every token). Default f16 on Apple Silicon, q8_0 elsewhere; override per
+// machine with ARISTO_KV_CACHE_TYPE after benching (aristo-tps-bench skill).
+const KV_CACHE_TYPE = process.env.ARISTO_KV_CACHE_TYPE ||
+  ((process.platform === 'darwin' && process.arch === 'arm64') ? 'f16' : 'q8_0')
+
 // Start Ollama
 const ollama = spawn(OLLAMA_BIN, ['serve'], {
   env: {
@@ -20,9 +27,8 @@ const ollama = spawn(OLLAMA_BIN, ['serve'], {
     OLLAMA_MAX_LOADED_MODELS: '2',
     // Flash Attention — faster decode/prefill on Apple Silicon; off by default.
     OLLAMA_FLASH_ATTENTION: '1',
-    // q8_0 KV cache (needs Flash Attention): ~lossless, halves the 32k KV footprint,
-    // ~+9–18% gen tok/s and removes swap stalls on RAM-tight machines. See main.js.
-    OLLAMA_KV_CACHE_TYPE: 'q8_0'
+    // Hardware-gated KV cache type (see KV_CACHE_TYPE above).
+    OLLAMA_KV_CACHE_TYPE: KV_CACHE_TYPE
   }
 })
 ollama.stdout.on('data', d => console.log('[ollama]', d.toString().trimEnd()))

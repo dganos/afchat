@@ -14,6 +14,16 @@ const earlyLogs = []
 const OLLAMA_PORT = process.env.ARISTO_OLLAMA_PORT || '11435'
 const OLLAMA_BASE = `http://localhost:${OLLAMA_PORT}`
 
+// KV-cache quantization is HARDWARE-DEPENDENT — gate it, don't hardcode. q8_0 halves
+// the 32k KV footprint and wins on RAM-tight CPU-only targets (the 8 GB Intel
+// air-gapped box: +9–18% tok/s and no memory-pressure swap stalls), but REGRESSES
+// generation ~48% on Apple Silicon (Metal has no optimized q8_0-KV kernel — it
+// dequantizes the KV cache every token on the GPU), where f16 at 32k fits fine
+// anyway (measured M1 Pro: 42→22 tok/s with q8_0). Default per platform; override
+// per machine with ARISTO_KV_CACHE_TYPE after checking the aristo-tps-bench skill.
+const KV_CACHE_TYPE = process.env.ARISTO_KV_CACHE_TYPE ||
+  ((process.platform === 'darwin' && process.arch === 'arm64') ? 'f16' : 'q8_0')
+
 function sendLog(source, text) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('log', source, text)
@@ -72,13 +82,9 @@ function startOllama() {
       // Flash Attention: faster decode (~+15%) and prefill on Apple Silicon, and
       // it is off by default in Ollama. Measured net win for our doc-QA workload.
       OLLAMA_FLASH_ATTENTION: '1',
-      // Quantize the KV cache to q8_0 (requires Flash Attention, above). Halves the
-      // KV footprint of the 32k window; q8_0 is effectively lossless. Measured on a
-      // CPU-only i7-1255U at the real 32k config: ~+9–18% generation tok/s AND it
-      // removes the memory-pressure swap stalls that otherwise crater a run to ~1
-      // tok/s — the decisive win on RAM-tight targets (the 8 GB air-gapped box).
-      // Bench: afchat_lab/scripts/bench_aristo_tps.py (see aristo-tps-bench skill).
-      OLLAMA_KV_CACHE_TYPE: 'q8_0',
+      // Hardware-gated KV cache type (see KV_CACHE_TYPE above): f16 on Apple Silicon,
+      // q8_0 on CPU-only/RAM-tight targets; per-machine override via ARISTO_KV_CACHE_TYPE.
+      OLLAMA_KV_CACHE_TYPE: KV_CACHE_TYPE,
       // Keep the (single) model resident indefinitely so an idle pause never
       // triggers a cold reload mid-session. The API server warms it up at startup
       // so the first question is fast too. before-quit unloads it.
