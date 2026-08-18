@@ -31,6 +31,7 @@ export function SettingsPanel({ open, onClose, settings, onSettingsChange, onCle
   // Clear-history confirm
   const [confirmClear, setConfirmClear] = useState(false)
 
+
   // Load the current system prompt whenever the panel opens.
   useEffect(() => {
     if (!open) { setConfirmClear(false); setPromptAck(null); return }
@@ -121,6 +122,30 @@ export function SettingsPanel({ open, onClose, settings, onSettingsChange, onCle
 
         {/* Settings */}
         <div className="flex-1 overflow-y-auto">
+          {/* Answer mode section */}
+          <div className="px-4 py-3 border-b">
+            <h3 className="text-xs font-medium text-muted-foreground mb-2">Answer mode</h3>
+            <div className="flex rounded-md border border-border-strong overflow-hidden text-sm mb-2">
+              <button
+                onClick={() => onSettingsChange({ ...settings, mode: 'agentic' })}
+                className={`flex-1 px-3 py-1.5 transition-colors ${settings.mode !== 'rag' ? 'bg-primary text-primary-foreground' : 'hover:bg-surface-2'}`}
+              >
+                Agentic
+              </button>
+              <button
+                onClick={() => onSettingsChange({ ...settings, mode: 'rag' })}
+                className={`flex-1 px-3 py-1.5 transition-colors ${settings.mode === 'rag' ? 'bg-primary text-primary-foreground' : 'hover:bg-surface-2'}`}
+              >
+                RAG (fast)
+              </button>
+            </div>
+            {settings.mode === 'rag' && (
+              <p className="text-xs text-muted-foreground">
+                Retrieval happens up-front (semantic index required — build it in the Documents panel); the model answers in a single pass, ~2× faster. Uses the model selected in the top bar.
+              </p>
+            )}
+          </div>
+
           {/* Speed check section */}
           <div className="px-4 py-3 border-b">
             <h3 className="text-xs font-medium text-muted-foreground mb-2">Speed check</h3>

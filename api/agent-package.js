@@ -22,6 +22,10 @@ function loadPackage(pkgPath) {
   pkg.system_prompt = fs.readFileSync(path.join(dir, pkg.system_prompt_file), 'utf-8').trim()
   pkg.runtime = pkg.runtime || {}
   pkg.toolAllowlist = pkg.tools.map(t => t.name)
+  // Classic-RAG mode block (optional): resolve its prompt file like the main one.
+  if (pkg.rag && pkg.rag.system_prompt_file) {
+    pkg.rag.system_prompt = fs.readFileSync(path.join(dir, pkg.rag.system_prompt_file), 'utf-8').trim()
+  }
   return pkg
 }
 

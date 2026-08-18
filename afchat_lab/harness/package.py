@@ -37,6 +37,7 @@ class AgentPackage:
     dir: Path
     version: int = 1
     embed_model: "dict | None" = None   # {id, max_input_chars, top_k} for semantic retrieval
+    rag: "dict | None" = None           # classic-RAG pipeline knobs + rag_system_prompt (resolved)
 
     @property
     def tool_names(self) -> list[str]:
@@ -76,6 +77,11 @@ def load_package(path: str | Path) -> AgentPackage:
     tools = d.get("tools") or (base.tools if base else None)
     runtime = {**(base.runtime if base else {}), **d.get("runtime", {})}
     embed_model = d.get("embed_model") or (base.embed_model if base else None)
+    rag = d.get("rag") or (base.rag if base else None)
+    if rag and rag.get("system_prompt_file") and "system_prompt" not in rag:
+        # resolve the RAG prompt against the package dir that DECLARED it
+        rag_dir = pkg_dir if d.get("rag") else base.dir
+        rag = {**rag, "system_prompt": (rag_dir / rag["system_prompt_file"]).read_text(encoding="utf-8").strip()}
 
     missing = [k for k, v in (("name", d.get("name")), ("model", model), ("tools", tools)) if not v]
     if not d.get("system_prompt_file") and base is None:
@@ -100,6 +106,7 @@ def load_package(path: str | Path) -> AgentPackage:
         system_prompt=system_prompt,
         dir=pkg_dir,
         embed_model=embed_model,
+        rag=rag,
     )
 
 

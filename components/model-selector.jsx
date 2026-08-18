@@ -186,7 +186,7 @@ export function ModelSelector({ onModelChange }) {
             ) : models.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-6">No models found</p>
             ) : (
-              models.map((m) => (
+              models.map((m, i) => (
                 <button
                   key={m.name}
                   onClick={() => selectModel(m.name)}
@@ -202,6 +202,12 @@ export function ModelSelector({ onModelChange }) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="text-sm font-medium truncate">{m.name}</span>
+                      {m.validated && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary-soft text-primary shrink-0">נבדק ✓</span>
+                      )}
+                      {m.toolsCapable === false && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-review text-review-text shrink-0" title="ללא תמיכה בכלים — מצב סוכן לא יעבוד; השתמשו במצב RAG">RAG בלבד</span>
+                      )}
                     </div>
                     <div className="flex gap-2 text-[11px] text-muted-foreground">
                       <span>{formatBytes(m.size)}</span>

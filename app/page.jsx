@@ -21,7 +21,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { ContextMeter } from '@/components/context-meter'
 import { Logo } from '@/components/logo'
 
-const DEFAULT_SETTINGS = { autoSearch: false }
+const DEFAULT_SETTINGS = { autoSearch: false, mode: 'agentic' }
 
 function loadSettings() {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS
@@ -51,6 +51,10 @@ export default function ChatPage() {
   const compactionRef = useRef(null)
   const autoSearchRef = useRef(settings.autoSearch)
   useEffect(() => { autoSearchRef.current = settings.autoSearch }, [settings.autoSearch])
+  // Answer mode (agentic tool-loop vs classic RAG). The model for BOTH modes is
+  // whatever the top-bar selector chose — one selector, no per-mode model.
+  const modeRef = useRef(settings.mode)
+  useEffect(() => { modeRef.current = settings.mode }, [settings.mode])
 
   const { messages, setMessages, input, handleInputChange, handleSubmit, status, error, stop } = useChat({
     api: 'http://localhost:3001/chat',
@@ -61,7 +65,7 @@ export default function ChatPage() {
       const sent = c
         ? [{ role: 'assistant', content: c.summary, parts: [{ type: 'text', text: c.summary }] }, ...messages.slice(c.count)]
         : messages
-      return { messages: sent, autoSearch: autoSearchRef.current }
+      return { messages: sent, autoSearch: autoSearchRef.current, mode: modeRef.current }
     },
   })
 
@@ -163,6 +167,18 @@ export default function ChatPage() {
           <ContextMeter messages={effectiveContext} onCompact={compactContext} compacting={compacting} />
           <MemoryMeter />
           <ModelSelector />
+          {/* Always-visible answer-mode chip — click to change it in Settings */}
+          <button
+            onClick={() => setSettingsOpen(true)}
+            title={settings.mode === 'rag' ? 'מצב RAG — אחזור מקדים, מענה מהיר במעבר אחד' : 'מצב סוכן — חיפוש רב-שלבי במסמכים'}
+            className={`px-2 min-h-9 text-[11px] font-medium rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              settings.mode === 'rag'
+                ? 'border-primary-soft bg-primary-soft text-primary hover:brightness-95'
+                : 'border-border bg-surface-2 text-fg-muted hover:bg-surface'
+            }`}
+          >
+            {settings.mode === 'rag' ? 'RAG' : 'סוכן'}
+          </button>
           <button
             onClick={() => setDocsOpen(true)}
             aria-label="מסמכים"

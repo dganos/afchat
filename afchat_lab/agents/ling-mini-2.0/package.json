@@ -1,0 +1,12 @@
+{
+  "name": "ling-mini-2.0",
+  "description": "Lab candidate: Ling-mini-2.0 (bailingmoe2, 16B total / ~1.4B active) at Q4_K_M, under the production gemma4-qa agent contract (prompt/tools/runtime/retrieval supplements inherited). Small-total MoE fit test for the 16GB no-GPU target.",
+  "extends": "../../../packages/gemma4-qa",
+  "model": {
+    "id": "hf.co/bartowski/inclusionAI_Ling-mini-2.0-GGUF:Q4_K_M",
+    "label": "ling-mini-2.0",
+    "context_length": 16384,
+    "think": false,
+    "_comment": "16k ctx for M1 Pro GPU fit (~10GB model). think=false per lab policy."
+  }
+}

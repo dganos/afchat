@@ -327,6 +327,11 @@ async function extractText(fullPath) {
     const result = await mammoth.extractRawText({ path: fullPath })
     return result.value
   }
+  if (ext === '.doc') {
+    // Legacy binary Word — mammoth handles only .docx; reading .doc as utf-8
+    // injects binary garbage into the blocks/catalog/grep. Skip it loudly.
+    throw new Error(`legacy .doc is not supported — save "${path.basename(fullPath)}" as .docx or PDF`)
+  }
   return fs.readFileSync(fullPath, 'utf-8')
 }
 
@@ -490,8 +495,8 @@ const SEM_MIN_COS = 0.45
 // calls search_content with a short pattern; the supplement ranks against this
 // full question (short patterns embed too noisily to rank reliably).
 let currentQuestion = ''
-const blockIndexCache = new Map()   // baseDir -> [{file, line, disp, raw, vec}]
 const qvCache = new Map()           // question -> embedding
+const modelCapsCache = new Map()    // model name -> capabilities[] (from /api/show)
 
 async function embed(texts) {
   const capped = texts.map(t => ((t.length > EMBED_MAX_CHARS ? t.slice(0, EMBED_MAX_CHARS) : t) || ' '))
@@ -534,8 +539,44 @@ function chunkDoc(lines) {
   return blocks
 }
 
-async function buildBlockIndex(baseDir) {
-  if (blockIndexCache.has(baseDir)) return blockIndexCache.get(baseDir)
+// ── Managed embedding indexes ─────────────────────────────────────────────────
+// TWO vector sets over the same blocks, mirroring the lab:
+//   raw      — block text as-is → the agentic semantic supplement (_build_block_index)
+//   enriched — "title (file)\n" + block → classic-RAG retrieval (_load_enriched_index);
+//              a block often lacks its doc's identity (a weight table never names
+//              the platform), so RAG scores against the enriched text.
+// Lifecycle (fixes the old stale-until-restart + silent-blocking-rebuild behavior):
+//   - a cheap FINGERPRINT (name/size/mtime of every doc) detects corpus changes;
+//     the in-memory index invalidates the moment it mismatches.
+//   - reads (supplement / RAG) only LOAD a valid disk cache — they NEVER embed;
+//     if the cache is stale the caller degrades and the UI shows "build needed".
+//   - POST /embeddings/build runs the one embedding job, with progress, and is
+//     the ONLY place vectors are computed.
+function corpusFingerprint(baseDir) {
+  const parts = walkDir(baseDir).sort().map(rel => {
+    try { const st = fs.statSync(path.join(baseDir, rel)); return `${rel}\x01${st.size}\x01${st.mtimeMs}` }
+    catch { return rel }
+  })
+  return crypto.createHash('sha1').update(parts.join('\x00'), 'utf-8').digest('hex')
+}
+
+function docTitles(baseDir) {
+  // First "# " line of each markdown doc, whitespace-collapsed — mirrors the lab.
+  const titles = {}
+  for (const rel of walkDir(baseDir).sort()) {
+    if (!rel.endsWith('.md')) continue
+    try {
+      for (const line of fs.readFileSync(path.join(baseDir, rel), 'utf-8').split('\n')) {
+        const ls = line.trimStart()
+        if (ls.startsWith('# ')) { titles[rel] = ls.slice(2).trim().split(/\s+/).join(' '); break }
+      }
+    } catch { /* unreadable → no title */ }
+  }
+  return titles
+}
+
+async function collectBlocks(baseDir) {
+  // Chunk the whole corpus (no embedding). Returns blocks + content signature.
   const rawBlocks = []
   for (const rel of walkDir(baseDir).sort()) {
     let lines
@@ -545,23 +586,93 @@ async function buildBlockIndex(baseDir) {
       rawBlocks.push({ file: rel, line, disp, raw })
     }
   }
+  const titles = docTitles(baseDir)
+  rawBlocks.forEach(b => { b.enriched = `${titles[b.file] || ''} (${b.file})\n${b.raw}` })
   const sig = crypto.createHash('sha1')
     .update(EMBED_MODEL + '\x00' + rawBlocks.map(b => b.raw).join('\x00'), 'utf-8').digest('hex')
-  // Cache OUTSIDE the corpus dir — a file under baseDir would be picked up by every
-  // corpus scan (catalog, grep, this index) as a spurious multi-MB "document".
-  const cacheFile = path.join(baseDir, '..', `.embed_cache_${path.basename(baseDir)}_${EMBED_MODEL.replace(/:/g, '_')}.json`)
-  let vecs = null
+  const ragSig = crypto.createHash('sha1')
+    .update('rag-enrich\x00' + rawBlocks.map(b => b.enriched).join('\x00'), 'utf-8').digest('hex')
+  return { rawBlocks, sig, ragSig }
+}
+
+const cacheFileFor = (baseDir, kind) => path.join(
+  baseDir, '..',
+  kind === 'raw'
+    ? `.embed_cache_${path.basename(baseDir)}_${EMBED_MODEL.replace(/:/g, '_')}.json`
+    : `.embed_cache_rag_${path.basename(baseDir)}_${EMBED_MODEL.replace(/:/g, '_')}.json`)
+
+// In-memory: { fingerprint, blocks (with .vec/.ragVec attached) } or null.
+let memIndex = null
+// Build-job state, surfaced via GET /embeddings/status.
+const embedState = { status: 'unknown', done: 0, total: 0, error: null, builtAt: null }
+
+function readVecCache(file, sig) {
   try {
-    const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf-8'))
-    if (cached.sig === sig) vecs = cached.vecs
-  } catch { /* no/stale cache */ }
-  if (!vecs) {
-    vecs = await embed(rawBlocks.map(b => b.raw))
-    try { fs.writeFileSync(cacheFile, JSON.stringify({ sig, vecs })) } catch { /* best effort */ }
+    const c = JSON.parse(fs.readFileSync(file, 'utf-8'))
+    if (c.sig === sig) return c.vecs
+  } catch { /* absent/corrupt */ }
+  return null
+}
+
+// Load-only: returns the up-to-date index or null (NEVER embeds). Marks status.
+async function loadIndexes(baseDir) {
+  const fp = corpusFingerprint(baseDir)
+  if (memIndex && memIndex.fingerprint === fp) return memIndex.blocks
+  const { rawBlocks, sig, ragSig } = await collectBlocks(baseDir)
+  const vecs = readVecCache(cacheFileFor(baseDir, 'raw'), sig)
+  const ragVecs = readVecCache(cacheFileFor(baseDir, 'rag'), ragSig)
+  if (!vecs || !ragVecs) {
+    if (embedState.status !== 'building') embedState.status = 'stale'
+    return null
   }
-  rawBlocks.forEach((b, k) => { b.vec = vecs[k] })
-  blockIndexCache.set(baseDir, rawBlocks)
+  rawBlocks.forEach((b, k) => { b.vec = vecs[k]; b.ragVec = ragVecs[k] })
+  memIndex = { fingerprint: fp, blocks: rawBlocks }
+  if (embedState.status !== 'building') { embedState.status = 'fresh'; embedState.total = rawBlocks.length }
   return rawBlocks
+}
+
+// The one place embeddings are computed. Single-flight; progress in embedState.
+let buildInFlight = null
+async function buildEmbeddings(baseDir) {
+  if (buildInFlight) return buildInFlight
+  buildInFlight = (async () => {
+    embedState.status = 'building'; embedState.error = null; embedState.done = 0
+    try {
+      const fp = corpusFingerprint(baseDir)
+      const { rawBlocks, sig, ragSig } = await collectBlocks(baseDir)
+      embedState.total = rawBlocks.length * 2
+      const embedWithProgress = async (texts) => {
+        const out = []
+        for (let k = 0; k < texts.length; k += 32) {
+          out.push(...await embed(texts.slice(k, k + 32)))
+          embedState.done = Math.min(embedState.total, embedState.done + Math.min(32, texts.length - k))
+        }
+        return out
+      }
+      let vecs = readVecCache(cacheFileFor(baseDir, 'raw'), sig)
+      if (vecs) embedState.done += rawBlocks.length
+      else {
+        vecs = await embedWithProgress(rawBlocks.map(b => b.raw))
+        fs.writeFileSync(cacheFileFor(baseDir, 'raw'), JSON.stringify({ sig, vecs }))
+      }
+      let ragVecs = readVecCache(cacheFileFor(baseDir, 'rag'), ragSig)
+      if (ragVecs) embedState.done += rawBlocks.length
+      else {
+        ragVecs = await embedWithProgress(rawBlocks.map(b => b.enriched))
+        fs.writeFileSync(cacheFileFor(baseDir, 'rag'), JSON.stringify({ sig: ragSig, vecs: ragVecs }))
+      }
+      rawBlocks.forEach((b, k) => { b.vec = vecs[k]; b.ragVec = ragVecs[k] })
+      memIndex = { fingerprint: fp, blocks: rawBlocks }
+      embedState.status = 'fresh'; embedState.builtAt = new Date().toISOString()
+      console.log(`[api] embeddings built: ${rawBlocks.length} blocks (raw + enriched)`)
+    } catch (e) {
+      embedState.status = 'error'; embedState.error = e.message
+      console.error('[api] embeddings build failed:', e.message)
+    } finally {
+      buildInFlight = null
+    }
+  })()
+  return buildInFlight
 }
 
 function cosine(a, b) {
@@ -577,7 +688,8 @@ async function semanticSupplement(baseDir, question, scopeRels) {
   if (!question) return ''
   let index, qv
   try {
-    index = await buildBlockIndex(baseDir)
+    index = await loadIndexes(baseDir)   // load-only: stale/absent → null, never embeds here
+    if (!index) return ''                // degrade to lexical; UI surfaces "build embeddings"
     qv = qvCache.get(question)
     if (!qv) { qv = (await embed([question]))[0]; qvCache.set(question, qv) }
   } catch { return '' }  // embeddings unavailable → lexical only
@@ -590,6 +702,155 @@ async function semanticSupplement(baseDir, question, scopeRels) {
   const body = picks.map(x => x.b.disp).join('\n\n')
   return '\n\n[Related passages by MEANING (semantic search on the question — the ' +
     'wording may differ from your search terms; verify the value before using):]\n\n' + body
+}
+
+// ── Classic-RAG mode (retrieve-then-inject, single call, NO tools) ────────────
+// Port of afchat_lab/harness/rag_eval.py's v4 pipeline; all knobs come from the
+// package's `rag` block (SAME AGENT rule). MUST mirror _rrf/_build_prompt exactly:
+// hybrid RRF fusing only each channel's top fuse_top_n; doc-boost — top-2 files by
+// summed top-3 block scores get their best in-file semantic blocks (depths per
+// doc_boost_depths); final context ordered subject-file-first, semantic-best first
+// within each group.
+function ragRetrieve(question, index, qv) {
+  const R = AGENT?.rag || {}
+  const k = R.k || 12, c = R.rrf_c || 60, topN = R.fuse_top_n || 50
+  const depths = R.doc_boost_depths || [8, 4]
+  const n = index.length
+  const cos = index.map(b => cosine(qv, b.ragVec))
+  const sem = index.map((_, i) => i).sort((a, b) => (cos[b] - cos[a]) || (a - b)).slice(0, topN)
+  // Python's \w is Unicode; JS's is ASCII-only and would shred Hebrew — use \p{L}\p{N}.
+  // No dedupe: the lab keeps duplicate words (they weight BM25), mirror exactly.
+  const words = stripMarks(question.toLowerCase()).split(/[^\p{L}\p{N}_"']+/u).filter(w => w.length >= 2)
+  const ranked = rankBlocks(index.map((b, i) => ({ raw: b.enriched, disp: String(i) })), words)
+  const lex = ranked.map(b => parseInt(b.disp, 10)).slice(0, topN)
+  const score = new Map()
+  sem.forEach((i, rank) => score.set(i, (score.get(i) || 0) + 1 / (c + rank + 1)))
+  lex.forEach((i, rank) => score.set(i, (score.get(i) || 0) + 1 / (c + rank + 1)))
+  const ordered = [...score.keys()].sort((a, b) => (score.get(b) - score.get(a)) || (a - b))
+  const top = ordered.slice(0, k)
+  // doc boost
+  const byFile = new Map(), fileCount = new Map()
+  for (const i of ordered) {
+    const f = index[i].file
+    const cnt = (fileCount.get(f) || 0) + 1
+    fileCount.set(f, cnt)
+    if (cnt <= 3) byFile.set(f, (byFile.get(f) || 0) + score.get(i))
+  }
+  const topFiles = [...byFile.keys()].sort((a, b) => byFile.get(b) - byFile.get(a)).slice(0, 2)
+  topFiles.forEach((f, fi) => {
+    const depth = depths[fi] ?? 4
+    const infile = index.map((b, i) => i).filter(i => index[i].file === f)
+      .sort((a, b) => (cos[b] - cos[a]) || (a - b)).slice(0, depth)
+    for (const i of infile) if (!top.includes(i)) top.push(i)
+  })
+  const rankOf = new Map(topFiles.map((f, r) => [f, r]))
+  top.sort((a, b) => {
+    const ra = rankOf.has(index[a].file) ? rankOf.get(index[a].file) : 9
+    const rb = rankOf.has(index[b].file) ? rankOf.get(index[b].file) : 9
+    return (ra - rb) || (cos[b] - cos[a]) || (a - b)
+  })
+  return top.map(i => index[i])
+}
+
+function ragBuildPrompt(question, blocks) {
+  const budget = AGENT?.rag?.ctx_chars || 11000
+  const parts = []
+  let used = 0
+  for (const b of blocks) {
+    if (used + b.disp.length > budget && parts.length) break
+    parts.push(b.disp)
+    used += b.disp.length
+  }
+  return `Document excerpts:\n\n${parts.join('\n\n')}\n\nQuestion: ${question}`
+}
+
+// Stream a classic-RAG answer: retrieve → one model call, no tools. `model` must
+// be one of the package's rag.models (falls back to the package/production model).
+async function streamRagResponse({ writer, uiMessages, signal, model }) {
+  const send = (type, value) => writer.write(formatDataStreamPart(type, value))
+  const uiText = (m) => {
+    if (Array.isArray(m.parts)) {
+      const t = m.parts.filter(p => p.type === 'text').map(p => p.text).join('')
+      if (t) return t
+    }
+    return typeof m.content === 'string' ? m.content : ''
+  }
+  const question = [...(uiMessages || [])].reverse().find(m => m.role === 'user' && uiText(m))
+  const q = question ? uiText(question) : ''
+  send('start_step', { messageId: 'rag-step-0' })
+
+  // CHAT FIRST: a tiny router call decides whether this message needs the
+  // documents at all — a greeting must get a normal reply, not an excerpt dump.
+  // Defaults to 'docs' on any error (QA is the primary use).
+  let route = 'docs'
+  if (AGENT?.rag?.router_prompt) {
+    try {
+      const r = await fetch(`${OLLAMA_BASE}/api/chat`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model, stream: false, keep_alive: -1,
+          messages: [
+            { role: 'system', content: AGENT.rag.router_prompt },
+            { role: 'user', content: q },
+          ],
+          options: { temperature: 0, num_predict: 4, num_ctx: 2048 },
+          think: false,
+        }),
+        signal,
+      })
+      const out = ((await r.json())?.message?.content || '').toLowerCase()
+      if (out.includes('chat')) route = 'chat'
+    } catch { /* router unavailable → docs */ }
+  }
+  if (route === 'chat') {
+    const history = (uiMessages || []).slice(0, -1)
+      .filter(m => (m.role === 'user' || m.role === 'assistant') && uiText(m))
+      .map(m => ({ role: m.role, content: uiText(m) }))
+    const turn = await streamOneOllamaTurn({
+      messages: [
+        { role: 'system', content: AGENT?.rag?.chat_system_prompt || 'You are a helpful assistant.' },
+        ...history,
+        { role: 'user', content: q },
+      ],
+      ollamaTools: [], temp: AGENT?.runtime?.temperature ?? 0,
+      numCtx: AGENT?.model?.context_length || 8192, send, signal, modelOverride: model,
+    })
+    send('finish_step', { finishReason: 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens }, isContinued: false })
+    send('finish_message', { finishReason: 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens } })
+    return
+  }
+
+  const index = await loadIndexes(DOCS_PATH)
+  if (!index) {
+    // No blocking build inside a question — tell the user exactly what to do.
+    send('text', embedState.status === 'building'
+      ? 'האינדקס הסמנטי נבנה כעת — נסו שוב בעוד רגע (ניתן לעקוב אחר ההתקדמות בחלונית המסמכים).'
+      : 'מצב RAG דורש אינדקס סמנטי עדכני. פתחו את חלונית המסמכים ולחצו "בניית אינדקס", ואז שאלו שוב.')
+    send('finish_step', { finishReason: 'stop', usage: { promptTokens: 0, completionTokens: 0 }, isContinued: false })
+    send('finish_message', { finishReason: 'stop', usage: { promptTokens: 0, completionTokens: 0 } })
+    return
+  }
+  let qv = qvCache.get(q)
+  if (!qv) { qv = (await embed([q]))[0]; qvCache.set(q, qv) }
+  const blocks = ragRetrieve(q, index, qv)
+  const prompt = ragBuildPrompt(q, blocks)
+  // History (minus the last question) is kept so follow-ups read naturally, but
+  // retrieval is always for the LAST user question.
+  const history = (uiMessages || []).slice(0, -1)
+    .filter(m => (m.role === 'user' || m.role === 'assistant') && uiText(m))
+    .map(m => ({ role: m.role, content: uiText(m) }))
+  const messages = [
+    { role: 'system', content: AGENT?.rag?.system_prompt || '' },
+    ...history,
+    { role: 'user', content: prompt },
+  ]
+  const temp = AGENT?.runtime?.temperature ?? 0
+  const numCtx = AGENT?.model?.context_length || 8192
+  const turn = await streamOneOllamaTurn({
+    messages, ollamaTools: [], temp, numCtx, send, signal, modelOverride: model,
+  })
+  send('finish_step', { finishReason: 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens }, isContinued: false })
+  send('finish_message', { finishReason: 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens } })
 }
 
 async function grepCorpus({ pattern, path: scope, context }) {
@@ -979,7 +1240,7 @@ const isTransientNetErr = (e) =>
 // gemma's text-shaped form) and returns them for the caller to execute. Retries
 // once on a transient connection reset, but only while nothing has been emitted
 // yet (so a mid-stream drop can't duplicate output).
-async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, signal }) {
+async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, signal, modelOverride }) {
   // Retry depth from the shared recovery policy (SAME AGENT as the lab). Streaming
   // can only safely retry BEFORE anything is emitted (see the !emitted guard below),
   // so a mid-stream drop still surfaces — that constraint is inherent to streaming.
@@ -1004,8 +1265,11 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
       const r = await fetch(`${OLLAMA_BASE}/api/chat`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: currentModel, messages,
+          model: modelOverride || currentModel, messages,
           tools: ollamaTools.length ? ollamaTools : undefined,
+          // Stock gemma4 models stall in the thinking channel mid-loop (lab-proven);
+          // the field is only sent for them — other models may reject it.
+          think: isStockGemma4(modelOverride || currentModel) ? false : undefined,
           stream: true, keep_alive: -1,
           // num_predict comes from the shared agent package (same knob the lab
           // runs with — the lab must behave exactly like Aristo): bounds a
@@ -1072,6 +1336,21 @@ function isRefusal(text, markers) {
   return markers.some(m => low.includes(m))
 }
 
+// Stock gemma4 registry models (gemma4:e2b, gemma4:e2b-it-qat, ...) need two
+// agentic-loop adaptations, both root-caused in the lab (2026-08-18):
+//  1. The system prompt's "## Your tools (read-only)" prose section — tools they
+//     already receive as API schemas — deterministically SUPPRESSES their
+//     structured tool calls on post-tool-result turns. Strip that one section.
+//  2. With thinking on they stall (think, then end the turn empty) — think=false.
+// The custom production e4b was built WITH these conventions and needs neither.
+// NOTE: measured agentic quality for e2b-it-qat is ~40% (it won't iterate
+// searches) vs 91% for the custom e4b — stock gemma4 shines in RAG mode instead.
+const isStockGemma4 = (m) => /^gemma4:/.test(m || '')
+function agenticPromptFor(model, prompt) {
+  if (!isStockGemma4(model)) return prompt
+  return prompt.replace(/\n## Your tools[\s\S]*?(?=\n## )/, '')
+}
+
 // Drive the full multi-step agent loop, writing AI SDK data-stream parts.
 async function streamChatResponse({ writer, systemPrompt, uiMessages, signal }) {
   const send = (type, value) => writer.write(formatDataStreamPart(type, value))
@@ -1090,7 +1369,7 @@ async function streamChatResponse({ writer, systemPrompt, uiMessages, signal }) 
     }
     return typeof m.content === 'string' ? m.content : ''
   }
-  const messages = [{ role: 'system', content: systemPrompt }]
+  const messages = [{ role: 'system', content: agenticPromptFor(currentModel, systemPrompt) }]
   for (const m of uiMessages || []) {
     if (m.role !== 'user' && m.role !== 'assistant') continue
     const text = uiText(m)
@@ -1412,7 +1691,19 @@ const server = http.createServer(async (req, res) => {
       },
       execute: async (writer) => {
         try {
-          await streamChatResponse({ writer, systemPrompt, uiMessages: body.messages, signal: ac.signal })
+          if (body.mode === 'rag' && AGENT?.rag) {
+            // Classic-RAG mode: retrieve-then-inject, single call, no tools.
+            // ONE model selector rules both modes: RAG uses the top-bar model
+            // (body.ragModel is kept as an API-level override for tests/scripts).
+            const model = body.ragModel || currentModel || (AGENT.rag.models || [])[0]
+            if (AGENT.rag.models?.length && !AGENT.rag.models.includes(model)) {
+              console.log(`[api] RAG mode with unvalidated model ${model} (validated: ${AGENT.rag.models.join(', ')})`)
+            }
+            console.log(`[api] RAG mode, model=${model}`)
+            await streamRagResponse({ writer, uiMessages: body.messages, signal: ac.signal, model })
+          } else {
+            await streamChatResponse({ writer, systemPrompt, uiMessages: body.messages, signal: ac.signal })
+          }
         } catch (e) {
           if (ac.signal.aborted) return  // client stopped — end the stream quietly
           console.error('[api] chat stream error:', e?.message, '| cause:', e?.cause?.message || e?.cause || '(none)')
@@ -1445,14 +1736,37 @@ const server = http.createServer(async (req, res) => {
       // For a model that's already loaded, exclude only its own size.
       const effectiveFreeFor = (m) => freeRAM + loadedTotal - (loadedByName.get(m.name) || 0)
 
-      const models = (data.models || []).map(m => ({
-        name: m.name,
-        size: m.size,
-        parameterSize: m.details?.parameter_size || null,
-        quantization: m.details?.quantization_level || null,
-        family: m.details?.family || null,
-        fitsInRAM: m.size < effectiveFreeFor(m) * 0.9,
+      // Capabilities per model (cached — /api/show is cheap but N models × every
+      // poll adds up). Embedding-only models (bge-m3) must NOT be selectable as
+      // chat models; models without 'tools' can't run the agentic loop.
+      const caps = await Promise.all((data.models || []).map(async m => {
+        if (modelCapsCache.has(m.name)) return modelCapsCache.get(m.name)
+        try {
+          const r = await fetch(`${OLLAMA_BASE}/api/show`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: m.name }),
+          })
+          const c = (await r.json()).capabilities || []
+          modelCapsCache.set(m.name, c)
+          return c
+        } catch { return [] }
       }))
+      const validated = new Set([AGENT?.model?.id, ...(AGENT?.rag?.models || [])].filter(Boolean))
+      const models = (data.models || [])
+        .map((m, i) => ({ m, c: caps[i] }))
+        .filter(({ c }) => c.includes('completion'))   // hide embedding-only models
+        .map(({ m, c }) => ({
+          name: m.name,
+          size: m.size,
+          parameterSize: m.details?.parameter_size || null,
+          quantization: m.details?.quantization_level || null,
+          family: m.details?.family || null,
+          fitsInRAM: m.size < effectiveFreeFor(m) * 0.9,
+          toolsCapable: c.includes('tools'),           // agentic mode needs this
+          validated: validated.has(m.name),            // in the agent package (tested)
+        }))
+        // validated first, then by size — the tested models lead the list
+        .sort((a, b) => (b.validated - a.validated) || (a.size - b.size))
 
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
@@ -1542,10 +1856,11 @@ const server = http.createServer(async (req, res) => {
       const fitsInRAM = match.size < effectiveFree * 0.9
       if (!fitsInRAM) console.warn(`[api] loading ${body.model} despite tight RAM (needs ${(match.size/1e9).toFixed(1)}GB, ~${(effectiveFree/1e9).toFixed(1)}GB free after eviction)`)
 
-      // Evict any other resident models before loading the new one. Belt-
-      // and-suspenders alongside OLLAMA_MAX_LOADED_MODELS=1 — guarantees the
-      // old model's VRAM is freed before we start loading the new one.
-      const others = (psData.models || []).filter(m => m.name !== body.model)
+      // Evict other resident CHAT models before loading the new one (belt-and-
+      // suspenders alongside OLLAMA_MAX_LOADED_MODELS=2) — but NEVER the embedding
+      // model: it co-resides by design (semantic search / RAG), and evicting it on
+      // every switch silently forces a reload on the next search.
+      const others = (psData.models || []).filter(m => m.name !== body.model && !m.name.startsWith(EMBED_MODEL))
       for (const m of others) {
         try {
           await fetch(`${OLLAMA_BASE}/api/generate`, {
@@ -1568,7 +1883,9 @@ const server = http.createServer(async (req, res) => {
         await fetch(`${OLLAMA_BASE}/api/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ model: body.model, prompt: '', keep_alive: '5m', stream: false })
+          // keep_alive -1: consistent with the chat path — a switched model must
+          // not silently unload after 5 idle minutes (before-quit unloads it).
+          body: JSON.stringify({ model: body.model, prompt: '', keep_alive: -1, stream: false })
         })
         console.log(`[api] model loaded in ${((Date.now() - loadStart) / 1000).toFixed(1)}s`)
       } catch (e) {
@@ -1627,6 +1944,37 @@ const server = http.createServer(async (req, res) => {
   }
 
   // List all documents
+  // Embedding-index status: fresh | stale | building | error | unknown (+progress).
+  // Cheap by design (fingerprint vs in-memory index; no vector loads) — the UI polls it.
+  if (req.method === 'GET' && req.url === '/embeddings/status') {
+    let status = embedState.status
+    try {
+      if (status !== 'building') {
+        const fp = corpusFingerprint(DOCS_PATH)
+        status = (memIndex && memIndex.fingerprint === fp) ? 'fresh'
+          : (status === 'error' ? 'error' : 'stale')
+      }
+    } catch { status = 'error' }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      status, done: embedState.done, total: embedState.total,
+      error: embedState.error, builtAt: embedState.builtAt,
+      blocks: memIndex ? memIndex.blocks.length : null,
+      model: EMBED_MODEL,
+      ragModels: AGENT?.rag?.models || [],
+    }))
+    return
+  }
+
+  // Kick the embedding build (async; poll /embeddings/status for progress).
+  if (req.method === 'POST' && req.url === '/embeddings/build') {
+    const already = embedState.status === 'building'
+    if (!already) buildEmbeddings(DOCS_PATH)  // fire and poll — errors land in embedState
+    res.writeHead(202, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ started: !already, alreadyBuilding: already }))
+    return
+  }
+
   if (req.method === 'GET' && req.url === '/documents') {
     try {
       const files = walkDir(DOCS_PATH).map(f => {
@@ -1656,6 +2004,11 @@ const server = http.createServer(async (req, res) => {
     } catch {
       filename = rawFilename
     }
+    if (filename.toLowerCase().endsWith('.doc')) {
+      res.writeHead(415, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'קובצי ‎.doc ישנים אינם נתמכים — שמרו את הקובץ כ‑docx או PDF והעלו שוב.' }))
+      return
+    }
 
     try {
       const dest = safePath(filename)
@@ -1666,9 +2019,10 @@ const server = http.createServer(async (req, res) => {
       req.on('data', chunk => chunks.push(chunk))
       req.on('end', () => {
         fs.writeFileSync(dest, Buffer.concat(chunks))
-        console.log(`[api] document uploaded: ${filename}`)
+        memIndex = null  // corpus changed → semantic index stale until rebuilt
+        console.log(`[api] document uploaded: ${filename} (embedding index now stale)`)
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ success: true, filename }))
+        res.end(JSON.stringify({ success: true, filename, embeddingsStale: true }))
       })
     } catch (err) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
@@ -1688,9 +2042,10 @@ const server = http.createServer(async (req, res) => {
         return
       }
       fs.unlinkSync(fullPath)
-      console.log(`[api] document deleted: ${filename}`)
+      memIndex = null  // corpus changed → semantic index stale until rebuilt
+      console.log(`[api] document deleted: ${filename} (embedding index now stale)`)
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ success: true, filename }))
+      res.end(JSON.stringify({ success: true, filename, embeddingsStale: true }))
     } catch (err) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: err.message }))

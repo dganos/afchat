@@ -24,3 +24,4 @@ models:
   - id: gemma-4-e4b:latest
     label: gemma-4-e4b            # PRODUCTION, Aristo's package
   - package: agents/qwen3-14b
+  - package: agents/gemma4-e2b-qat  # speed candidate (2B-effective, QAT)

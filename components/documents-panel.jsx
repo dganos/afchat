@@ -19,6 +19,41 @@ export function DocumentsPanel({ open, onClose }) {
   const [viewingFile, setViewingFile] = useState(null)
   const fileInputRef = useRef(null)
 
+  // Semantic (embedding) index state — polled while the panel is open, faster
+  // while a build is running so the progress bar is live.
+  const [embed, setEmbed] = useState({ status: 'unknown', done: 0, total: 0 })
+  const pollRef = useRef(null)
+  const fetchEmbedStatus = async () => {
+    try {
+      const res = await fetch(`${API}/embeddings/status`)
+      const data = await res.json()
+      setEmbed(data)
+      return data
+    } catch { return null }
+  }
+  useEffect(() => {
+    if (!open) { clearInterval(pollRef.current); return }
+    fetchEmbedStatus()
+    pollRef.current = setInterval(async () => {
+      const d = await fetchEmbedStatus()
+      // poll every 4s idle; the interval itself stays, build progress just updates faster below
+    }, 4000)
+    return () => clearInterval(pollRef.current)
+  }, [open])
+  const startBuild = async () => {
+    try {
+      await fetch(`${API}/embeddings/build`, { method: 'POST' })
+      setEmbed((e) => ({ ...e, status: 'building', done: 0 }))
+      // tight poll during the build
+      const tight = setInterval(async () => {
+        const d = await fetchEmbedStatus()
+        if (!d || d.status !== 'building') clearInterval(tight)
+      }, 1000)
+    } catch (err) {
+      console.error('Failed to start embedding build:', err)
+    }
+  }
+
   const fetchFiles = async () => {
     setLoading(true)
     try {
@@ -55,6 +90,7 @@ export function DocumentsPanel({ open, onClose }) {
     fileInputRef.current.value = ''
     setUploading(false)
     fetchFiles()
+    fetchEmbedStatus()  // uploads mark the index stale — reflect it immediately
   }
 
   const handleDelete = async (filename) => {
@@ -63,6 +99,7 @@ export function DocumentsPanel({ open, onClose }) {
         method: 'DELETE'
       })
       fetchFiles()
+      fetchEmbedStatus()
     } catch (err) {
       console.error(`Failed to delete ${filename}:`, err)
     }
@@ -94,7 +131,7 @@ export function DocumentsPanel({ open, onClose }) {
             multiple
             onChange={handleUpload}
             className="hidden"
-            accept=".txt,.md,.csv,.json,.xml,.html,.log,.yaml,.yml,.toml,.ini,.cfg,.conf,.pdf,.doc,.docx"
+            accept=".txt,.md,.csv,.json,.xml,.html,.log,.yaml,.yml,.toml,.ini,.cfg,.conf,.pdf,.docx"
           />
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -104,6 +141,51 @@ export function DocumentsPanel({ open, onClose }) {
             <Upload className="h-4 w-4" />
             {uploading ? 'Uploading...' : 'Upload Documents'}
           </button>
+        </div>
+
+        {/* Semantic index (embeddings) */}
+        <div className="px-4 py-3 border-b">
+          <div className="flex items-center gap-2 mb-1.5">
+            <h3 className="text-xs font-medium text-muted-foreground">Semantic index</h3>
+            <span className={`ms-auto text-[11px] px-1.5 py-0.5 rounded ${
+              embed.status === 'fresh' ? 'bg-correct text-correct-text'
+                : embed.status === 'building' ? 'bg-primary-soft text-primary'
+                : embed.status === 'error' ? 'bg-wrong text-wrong-text'
+                : 'bg-surface-2 text-fg-muted'
+            }`}>
+              {embed.status === 'fresh' ? 'עדכני ✓'
+                : embed.status === 'building' ? 'נבנה…'
+                : embed.status === 'error' ? 'שגיאה'
+                : 'דורש בנייה'}
+            </span>
+          </div>
+          {embed.status === 'building' ? (
+            <>
+              <div className="h-1.5 rounded bg-surface-2 overflow-hidden mb-1">
+                <div className="h-full bg-primary transition-all"
+                  style={{ width: `${embed.total ? Math.round((embed.done / embed.total) * 100) : 3}%` }} />
+              </div>
+              <p className="text-[11px] text-muted-foreground">{embed.done}/{embed.total || '?'} blocks</p>
+            </>
+          ) : (
+            <>
+              <p className="text-[11px] text-muted-foreground mb-2">
+                {embed.status === 'fresh'
+                  ? `${embed.blocks ?? '—'} blocks indexed (${embed.model}). Semantic search + RAG mode active.`
+                  : embed.status === 'error'
+                    ? `Build failed: ${embed.error || 'unknown'} — is the embedding model (${embed.model}) available?`
+                    : 'Documents changed since the last build. Semantic search and RAG mode need a fresh index.'}
+              </p>
+              {embed.status !== 'fresh' && (
+                <button
+                  onClick={startBuild}
+                  className="flex items-center justify-center gap-2 w-full px-3 py-1.5 text-sm font-medium rounded-md border border-border-strong hover:bg-surface-2 transition-colors"
+                >
+                  בניית אינדקס
+                </button>
+              )}
+            </>
+          )}
         </div>
 
         {/* File list */}

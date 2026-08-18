@@ -31,3 +31,6 @@ models:
   - id: gemma-4-e4b:latest
     label: gemma-4-e4b            # PRODUCTION, Aristo's package
   - package: agents/qwen3-14b
+  - package: agents/qwen3-30b-a3b   # MoE candidate (30B/3B, IQ2_M)
+  - package: agents/ling-mini-2.0   # MoE candidate (16B/1.4B, Q4_K_M)
+  - package: agents/gemma4-e2b-qat  # speed candidate (2B-effective, QAT)

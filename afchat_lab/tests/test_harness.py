@@ -244,9 +244,13 @@ class GrepPathAndWideSearchTest(unittest.TestCase):
         self.assertIn("[tool error]", out)
         self.assertIn("no-such-file.md", out)
 
-    def test_wide_search_ranks_best_file_first(self):
+    def test_wide_search_ranks_most_relevant_blocks_first(self):
+        # Since the wide-only BM25 change, wide-search order is block RELEVANCE
+        # (more distinct/rarer query terms first), not match-count-per-file. A
+        # two-term query must rank zz-target's "radar fact" blocks (both terms)
+        # above aa-first's "radar note" (one term), regardless of file names.
         from harness.agent import _grep_corpus
-        out = _grep_corpus(self.dir.name, "radar")
+        out = _grep_corpus(self.dir.name, ["radar", "fact"])
         self.assertLess(out.index("zz-target.md"), out.index("aa-first.md"))
 
     def test_wide_search_caps_blocks_per_file_with_pointer(self):

@@ -1,0 +1,13 @@
+{
+  "name": "gemma4-e2b-qat",
+  "description": "Lab candidate: registry gemma4:e2b-it-qat (2B-effective, QAT 4-bit) under the FULL production agentic contract (prompt/tools/runtime/recovery/supplements inherited). Speed candidate: 2.3x gen, 1.8x prefill vs production e4b on CPU.",
+  "extends": "../../../packages/gemma4-qa",
+  "model": {
+    "id": "gemma4:e2b-it-qat",
+    "label": "gemma4-e2b-qat",
+    "context_length": 32768,
+    "_comment": "Same 32k as production. think=false: e2b-QAT burns whole turns in the thinking channel (empty content, no tool calls after step 1) — observed 0% agentic with thinking on; lab policy for heavy thinkers.",
+    "think": false
+  },
+  "system_prompt_file": "system_prompt.md"
+}

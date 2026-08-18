@@ -37,3 +37,4 @@ resources/ollama
 # Generated local embedding caches (bge-m3 vectors) — regenerated on demand
 .embed_cache_*.json
 **/.embed_cache_*.json
+afchat_lab/results_124_long_rag/

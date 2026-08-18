@@ -1,6 +1,6 @@
 {
   "name": "gemma4-qa",
-  "version": 9,
+  "version": 11,
   "description": "QA over a document corpus. The model is not handed the documents — it must use read-only filesystem tools to find and read the right passage, then answer grounded in the text. Single source of truth for both afchat_lab (Python) and the Aristo app (JS): both load this package and supply only the tool implementations for their runtime.",
 
   "model": {
@@ -36,6 +36,20 @@
   },
 
   "system_prompt_file": "system_prompt.md",
+
+  "_comment_rag": "Classic-RAG mode (retrieve-then-inject, single model call, NO tools): the pipeline that matched the agentic 91% at ~2x speed (v4, 2026-08-18, two identical 50Q runs). Single source of truth for BOTH afchat_lab (harness/rag_eval.py) and Aristo (api/chat.js) — SAME AGENT rule extended to the RAG pipeline. Retrieval: blocks scored against 'title (file)\\nblock' enrichment; hybrid RRF fusing only each channel's top fuse_top_n; then doc-boost (top-2 files by summed top-3 block scores get their best in-file semantic blocks, depths per doc_boost_depths); context ordered subject-file-first. rag.models are the validated models for this mode (e2b-qat: 88% but 1.7x faster than e4b's 91%; NOTE e2b-qat CANNOT run the agentic mode with the production prompt — see agents/gemma4-e2b-qat).",
+  "rag": {
+    "system_prompt_file": "rag_system_prompt.md",
+    "k": 12,
+    "fuse_top_n": 50,
+    "rrf_c": 60,
+    "doc_boost_depths": [8, 4],
+    "ctx_chars": 11000,
+    "models": ["gemma-4-e4b:latest", "gemma4:e2b-it-qat"],
+    "_comment_router": "RAG mode is a CHAT first: a tiny routing call (same model, ~3 tokens, temp 0) decides whether the user's message needs the documents at all. 'chat' → a plain conversational turn with chat_system_prompt, NO retrieval (greetings/thanks/meta must not get a 4k-token excerpt dump); 'docs' → the retrieve-then-inject flow. On any router error default to 'docs' (QA is the primary use). The lab benchmark (rag_eval) bypasses the router — every benchmark item is a docs question by construction.",
+    "router_prompt": "You are a router. Decide if the user's LAST message asks for INFORMATION (route: docs) or is pure social talk (route: chat). Any question — about values, times, weights, procedures, names, limits, anything — is docs. Only greetings, thanks, goodbyes, and questions about YOU (the assistant) are chat. When unsure, answer docs.\nExamples:\nשלום → chat\nתודה רבה → chat\nמי אתה? → chat\nהיי מה נשמע → chat\nכמה שוקל המסוק? → docs\nמה זמן הטיסה המרבי? → docs\nמה הנוהל במקרה של אש? → docs\nמהירות מרבית? → docs\nAnswer with EXACTLY one word: docs or chat.",
+    "chat_system_prompt": "You are Aristo, a friendly assistant for a document-QA app. Reply briefly and naturally in the user's language. If the user wants information from the documents, invite them to ask about the documents' content. Do not invent document content."
+  },
 
   "tools": [
     {
