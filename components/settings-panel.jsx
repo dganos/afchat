@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import { X, Settings2, Zap, FileText, Trash2, RotateCcw } from 'lucide-react'
 import { Speedometer } from '@/components/speedometer'
 import { HelicopterLoader } from '@/components/helicopter-loader'
+import { ModelSelector } from '@/components/model-selector'
 
 const API = 'http://localhost:3001'
 
@@ -122,6 +123,16 @@ export function SettingsPanel({ open, onClose, settings, onSettingsChange, onCle
 
         {/* Settings */}
         <div className="flex-1 overflow-y-auto">
+          {/* Model section — the list follows the answer mode below: each mode
+              offers only the models the agent package validated for it. */}
+          <div className="px-4 py-3 border-b">
+            <h3 className="text-xs font-medium text-muted-foreground mb-2">Model</h3>
+            <ModelSelector inline mode={settings.mode === 'rag' ? 'rag' : 'agentic'} />
+            <p className="text-xs text-muted-foreground mt-2">
+              Showing models validated for {settings.mode === 'rag' ? 'RAG' : 'Agentic'} mode. Switching mode adjusts the list (and the model, if needed).
+            </p>
+          </div>
+
           {/* Answer mode section */}
           <div className="px-4 py-3 border-b">
             <h3 className="text-xs font-medium text-muted-foreground mb-2">Answer mode</h3>
@@ -141,7 +152,7 @@ export function SettingsPanel({ open, onClose, settings, onSettingsChange, onCle
             </div>
             {settings.mode === 'rag' && (
               <p className="text-xs text-muted-foreground">
-                Retrieval happens up-front (semantic index required — build it in the Documents panel); the model answers in a single pass, ~2× faster. Uses the model selected in the top bar.
+                Retrieval happens up-front (semantic index required — build it in the Documents panel); the model answers in a single pass, ~2× faster. Uses the model selected above.
               </p>
             )}
           </div>

@@ -3,7 +3,7 @@ import 'streamdown/styles.css'
 
 export const metadata = {
   title: 'Aristo',
-  icons: { icon: '/logo.svg' },
+  icons: { icon: '/aristo-logo.png' },
 }
 
 // Set the theme synchronously, before first paint, to avoid a flash of the

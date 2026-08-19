@@ -20,7 +20,11 @@ function estimateLoadMs(sizeBytes) {
   return Math.max(1500, Math.round(1500 + gib * 2000))
 }
 
-export function ModelSelector({ onModelChange }) {
+// `inline` renders the picker as a block that expands in place (for the
+// Settings panel) instead of a compact header button with a floating dropdown.
+// `mode` ('agentic' | 'rag') filters the list to the models the agent package
+// validated for that mode; omitted = show all validated models.
+export function ModelSelector({ onModelChange, inline = false, mode = null }) {
   const [open, setOpen] = useState(false)
   const [models, setModels] = useState([])
   const [currentModel, setCurrentModel] = useState('')
@@ -81,7 +85,7 @@ export function ModelSelector({ onModelChange }) {
       const res = await fetch(`${API}/models/select`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: name })
+        body: JSON.stringify({ model: name, mode: mode || undefined })
       })
       const data = await res.json()
       clearInterval(progressTimerRef.current)
@@ -126,19 +130,38 @@ export function ModelSelector({ onModelChange }) {
 
   useEffect(() => () => clearInterval(progressTimerRef.current), [])
 
+  // Models valid for the active mode (the server marks per-mode validity;
+  // entries without `modes` — e.g. package failed to load — are never hidden).
+  const visibleModels = mode ? models.filter(m => m.modes?.[mode] !== false) : models
+
+  // If a mode switch left the current model outside that mode's allowlist
+  // (e.g. e2b-qat is RAG-only), auto-switch — preferring a model valid in BOTH
+  // modes (the production e4b) so flipping modes back and forth stays stable.
+  useEffect(() => {
+    if (!mode || switching || !currentModel || !models.length) return
+    const cur = models.find(m => m.name === currentModel)
+    if (!cur || !cur.modes || cur.modes[mode]) return
+    const fallback = models.find(m => m.modes?.agentic && m.modes?.rag) || visibleModels[0]
+    if (fallback) selectModel(fallback.name)
+  }, [mode, models, currentModel])  // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div ref={ref} className="relative">
       <button
         onClick={() => { setOpen(!open); if (!open) fetchModels() }}
-        className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-muted-foreground rounded-md hover:bg-muted transition-colors"
+        className={inline
+          ? 'flex w-full items-center gap-1.5 px-2.5 py-2 text-sm rounded-md border border-border-strong text-fg hover:bg-surface-2 transition-colors'
+          : 'flex items-center gap-1.5 px-2.5 py-1 text-xs text-muted-foreground rounded-md hover:bg-muted transition-colors'}
       >
         <Cpu className="h-3.5 w-3.5" />
-        <span className="max-w-[120px] truncate">{currentModel || 'No model'}</span>
-        <ChevronDown className="h-3 w-3" />
+        <span className={inline ? 'flex-1 truncate text-left' : 'max-w-[120px] truncate'}>{currentModel || 'No model'}</span>
+        <ChevronDown className={`h-3 w-3 transition-transform ${inline && open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
-        <div className="absolute top-full right-0 mt-1 w-80 bg-background border rounded-lg shadow-xl z-50 overflow-hidden">
+        <div className={inline
+          ? 'mt-1 w-full bg-background border rounded-lg overflow-hidden'
+          : 'absolute top-full right-0 mt-1 w-80 bg-background border rounded-lg shadow-xl z-50 overflow-hidden'}>
           {/* Memory info + eject */}
           {memory && (
             <div className="px-3 py-2 bg-surface-2 border-b text-[11px] text-muted-foreground flex items-center gap-3">
@@ -183,10 +206,10 @@ export function ModelSelector({ onModelChange }) {
                 <HelicopterLoader className="h-5 w-5" />
                 Loading models...
               </div>
-            ) : models.length === 0 ? (
+            ) : visibleModels.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-6">No models found</p>
             ) : (
-              models.map((m, i) => (
+              visibleModels.map((m, i) => (
                 <button
                   key={m.name}
                   onClick={() => selectModel(m.name)}

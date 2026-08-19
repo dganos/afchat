@@ -1751,10 +1751,20 @@ const server = http.createServer(async (req, res) => {
           return c
         } catch { return [] }
       }))
-      const validated = new Set([AGENT?.model?.id, ...(AGENT?.rag?.models || [])].filter(Boolean))
+      // Per-mode allowlists from the agent package: agentic_models for the tool
+      // loop, rag.models for classic RAG. A model may be valid in one mode only
+      // (e2b-qat is RAG-only; plain e2b is agentic-only) — the UI filters by the
+      // active mode via the per-model `modes` flags.
+      const agenticSet = new Set([AGENT?.model?.id, ...(AGENT?.agentic_models || [])].filter(Boolean))
+      const ragSet = new Set(AGENT?.rag?.models || [])
+      const validated = new Set([...agenticSet, ...ragSet])
       const models = (data.models || [])
         .map((m, i) => ({ m, c: caps[i] }))
         .filter(({ c }) => c.includes('completion'))   // hide embedding-only models
+        // Only the package-validated models are selectable. Other pulled models
+        // stay hidden; if the agent package failed to load, fall back to listing
+        // everything rather than an empty picker.
+        .filter(({ m }) => validated.size === 0 || validated.has(m.name))
         .map(({ m, c }) => ({
           name: m.name,
           size: m.size,
@@ -1764,6 +1774,9 @@ const server = http.createServer(async (req, res) => {
           fitsInRAM: m.size < effectiveFreeFor(m) * 0.9,
           toolsCapable: c.includes('tools'),           // agentic mode needs this
           validated: validated.has(m.name),            // in the agent package (tested)
+          modes: validated.size === 0
+            ? { agentic: true, rag: true }             // no package — don't restrict
+            : { agentic: agenticSet.has(m.name), rag: ragSet.has(m.name) },
         }))
         // validated first, then by size — the tested models lead the list
         .sort((a, b) => (b.validated - a.validated) || (a.size - b.size))
@@ -1824,6 +1837,20 @@ const server = http.createServer(async (req, res) => {
     if (!body.model) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'Missing model field' }))
+      return
+    }
+
+    // Same allowlists as GET /models. With a `mode` in the body, enforce that
+    // mode's list (agentic vs RAG); without one, any package-validated model passes.
+    const agenticAllowed = new Set([AGENT?.model?.id, ...(AGENT?.agentic_models || [])].filter(Boolean))
+    const ragAllowed = new Set(AGENT?.rag?.models || [])
+    const allowed = body.mode === 'rag' ? ragAllowed
+      : body.mode === 'agentic' ? agenticAllowed
+      : new Set([...agenticAllowed, ...ragAllowed])
+    const anyValidated = agenticAllowed.size + ragAllowed.size > 0
+    if (anyValidated && !allowed.has(body.model)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: `Model "${body.model}" is not validated for ${body.mode || 'any'} mode (allowed: ${[...allowed].join(', ') || 'none'})` }))
       return
     }
 
