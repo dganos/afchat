@@ -123,38 +123,10 @@ export function SettingsPanel({ open, onClose, settings, onSettingsChange, onCle
 
         {/* Settings */}
         <div className="flex-1 overflow-y-auto">
-          {/* Model section — the list follows the answer mode below: each mode
-              offers only the models the agent package validated for it. */}
+          {/* Model section */}
           <div className="px-4 py-3 border-b">
             <h3 className="text-xs font-medium text-muted-foreground mb-2">Model</h3>
-            <ModelSelector inline mode={settings.mode === 'rag' ? 'rag' : 'agentic'} />
-            <p className="text-xs text-muted-foreground mt-2">
-              Showing models validated for {settings.mode === 'rag' ? 'RAG' : 'Agentic'} mode. Switching mode adjusts the list (and the model, if needed).
-            </p>
-          </div>
-
-          {/* Answer mode section */}
-          <div className="px-4 py-3 border-b">
-            <h3 className="text-xs font-medium text-muted-foreground mb-2">Answer mode</h3>
-            <div className="flex rounded-md border border-border-strong overflow-hidden text-sm mb-2">
-              <button
-                onClick={() => onSettingsChange({ ...settings, mode: 'agentic' })}
-                className={`flex-1 px-3 py-1.5 transition-colors ${settings.mode !== 'rag' ? 'bg-primary text-primary-foreground' : 'hover:bg-surface-2'}`}
-              >
-                Agentic
-              </button>
-              <button
-                onClick={() => onSettingsChange({ ...settings, mode: 'rag' })}
-                className={`flex-1 px-3 py-1.5 transition-colors ${settings.mode === 'rag' ? 'bg-primary text-primary-foreground' : 'hover:bg-surface-2'}`}
-              >
-                RAG (fast)
-              </button>
-            </div>
-            {settings.mode === 'rag' && (
-              <p className="text-xs text-muted-foreground">
-                Retrieval happens up-front (semantic index required — build it in the Documents panel); the model answers in a single pass, ~2× faster. Uses the model selected above.
-              </p>
-            )}
+            <ModelSelector inline />
           </div>
 
           {/* Speed check section */}

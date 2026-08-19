@@ -539,16 +539,14 @@ function chunkDoc(lines) {
   return blocks
 }
 
-// ── Managed embedding indexes ─────────────────────────────────────────────────
-// TWO vector sets over the same blocks, mirroring the lab:
-//   raw      — block text as-is → the agentic semantic supplement (_build_block_index)
-//   enriched — "title (file)\n" + block → classic-RAG retrieval (_load_enriched_index);
-//              a block often lacks its doc's identity (a weight table never names
-//              the platform), so RAG scores against the enriched text.
+// ── Managed embedding index ───────────────────────────────────────────────────
+// ONE vector set: raw block text → the agentic semantic supplement (mirrors the
+// lab's _build_block_index). The classic-RAG mode and its enriched index were
+// removed from the app (the lab keeps its own RAG benchmark).
 // Lifecycle (fixes the old stale-until-restart + silent-blocking-rebuild behavior):
 //   - a cheap FINGERPRINT (name/size/mtime of every doc) detects corpus changes;
 //     the in-memory index invalidates the moment it mismatches.
-//   - reads (supplement / RAG) only LOAD a valid disk cache — they NEVER embed;
+//   - reads (the supplement) only LOAD a valid disk cache — they NEVER embed;
 //     if the cache is stale the caller degrades and the UI shows "build needed".
 //   - POST /embeddings/build runs the one embedding job, with progress, and is
 //     the ONLY place vectors are computed.
@@ -558,21 +556,6 @@ function corpusFingerprint(baseDir) {
     catch { return rel }
   })
   return crypto.createHash('sha1').update(parts.join('\x00'), 'utf-8').digest('hex')
-}
-
-function docTitles(baseDir) {
-  // First "# " line of each markdown doc, whitespace-collapsed — mirrors the lab.
-  const titles = {}
-  for (const rel of walkDir(baseDir).sort()) {
-    if (!rel.endsWith('.md')) continue
-    try {
-      for (const line of fs.readFileSync(path.join(baseDir, rel), 'utf-8').split('\n')) {
-        const ls = line.trimStart()
-        if (ls.startsWith('# ')) { titles[rel] = ls.slice(2).trim().split(/\s+/).join(' '); break }
-      }
-    } catch { /* unreadable → no title */ }
-  }
-  return titles
 }
 
 async function collectBlocks(baseDir) {
@@ -586,22 +569,19 @@ async function collectBlocks(baseDir) {
       rawBlocks.push({ file: rel, line, disp, raw })
     }
   }
-  const titles = docTitles(baseDir)
-  rawBlocks.forEach(b => { b.enriched = `${titles[b.file] || ''} (${b.file})\n${b.raw}` })
   const sig = crypto.createHash('sha1')
     .update(EMBED_MODEL + '\x00' + rawBlocks.map(b => b.raw).join('\x00'), 'utf-8').digest('hex')
-  const ragSig = crypto.createHash('sha1')
-    .update('rag-enrich\x00' + rawBlocks.map(b => b.enriched).join('\x00'), 'utf-8').digest('hex')
-  return { rawBlocks, sig, ragSig }
+  return { rawBlocks, sig }
 }
 
-const cacheFileFor = (baseDir, kind) => path.join(
-  baseDir, '..',
-  kind === 'raw'
-    ? `.embed_cache_${path.basename(baseDir)}_${EMBED_MODEL.replace(/:/g, '_')}.json`
-    : `.embed_cache_rag_${path.basename(baseDir)}_${EMBED_MODEL.replace(/:/g, '_')}.json`)
+const cacheFileFor = (baseDir) => path.join(
+  baseDir, '..', `.embed_cache_${path.basename(baseDir)}_${EMBED_MODEL.replace(/:/g, '_')}.json`)
+// The removed RAG mode left behind its enriched-vector cache — drop it on sight
+// so it doesn't linger on devices that built it.
+const staleRagCacheFor = (baseDir) => path.join(
+  baseDir, '..', `.embed_cache_rag_${path.basename(baseDir)}_${EMBED_MODEL.replace(/:/g, '_')}.json`)
 
-// In-memory: { fingerprint, blocks (with .vec/.ragVec attached) } or null.
+// In-memory: { fingerprint, blocks (with .vec attached) } or null.
 let memIndex = null
 // Build-job state, surfaced via GET /embeddings/status.
 const embedState = { status: 'unknown', done: 0, total: 0, error: null, builtAt: null }
@@ -618,14 +598,13 @@ function readVecCache(file, sig) {
 async function loadIndexes(baseDir) {
   const fp = corpusFingerprint(baseDir)
   if (memIndex && memIndex.fingerprint === fp) return memIndex.blocks
-  const { rawBlocks, sig, ragSig } = await collectBlocks(baseDir)
-  const vecs = readVecCache(cacheFileFor(baseDir, 'raw'), sig)
-  const ragVecs = readVecCache(cacheFileFor(baseDir, 'rag'), ragSig)
-  if (!vecs || !ragVecs) {
+  const { rawBlocks, sig } = await collectBlocks(baseDir)
+  const vecs = readVecCache(cacheFileFor(baseDir), sig)
+  if (!vecs) {
     if (embedState.status !== 'building') embedState.status = 'stale'
     return null
   }
-  rawBlocks.forEach((b, k) => { b.vec = vecs[k]; b.ragVec = ragVecs[k] })
+  rawBlocks.forEach((b, k) => { b.vec = vecs[k] })
   memIndex = { fingerprint: fp, blocks: rawBlocks }
   if (embedState.status !== 'building') { embedState.status = 'fresh'; embedState.total = rawBlocks.length }
   return rawBlocks
@@ -639,8 +618,8 @@ async function buildEmbeddings(baseDir) {
     embedState.status = 'building'; embedState.error = null; embedState.done = 0
     try {
       const fp = corpusFingerprint(baseDir)
-      const { rawBlocks, sig, ragSig } = await collectBlocks(baseDir)
-      embedState.total = rawBlocks.length * 2
+      const { rawBlocks, sig } = await collectBlocks(baseDir)
+      embedState.total = rawBlocks.length
       const embedWithProgress = async (texts) => {
         const out = []
         for (let k = 0; k < texts.length; k += 32) {
@@ -649,22 +628,17 @@ async function buildEmbeddings(baseDir) {
         }
         return out
       }
-      let vecs = readVecCache(cacheFileFor(baseDir, 'raw'), sig)
+      let vecs = readVecCache(cacheFileFor(baseDir), sig)
       if (vecs) embedState.done += rawBlocks.length
       else {
         vecs = await embedWithProgress(rawBlocks.map(b => b.raw))
-        fs.writeFileSync(cacheFileFor(baseDir, 'raw'), JSON.stringify({ sig, vecs }))
+        fs.writeFileSync(cacheFileFor(baseDir), JSON.stringify({ sig, vecs }))
       }
-      let ragVecs = readVecCache(cacheFileFor(baseDir, 'rag'), ragSig)
-      if (ragVecs) embedState.done += rawBlocks.length
-      else {
-        ragVecs = await embedWithProgress(rawBlocks.map(b => b.enriched))
-        fs.writeFileSync(cacheFileFor(baseDir, 'rag'), JSON.stringify({ sig: ragSig, vecs: ragVecs }))
-      }
-      rawBlocks.forEach((b, k) => { b.vec = vecs[k]; b.ragVec = ragVecs[k] })
+      try { fs.rmSync(staleRagCacheFor(baseDir), { force: true }) } catch { /* best-effort */ }
+      rawBlocks.forEach((b, k) => { b.vec = vecs[k] })
       memIndex = { fingerprint: fp, blocks: rawBlocks }
       embedState.status = 'fresh'; embedState.builtAt = new Date().toISOString()
-      console.log(`[api] embeddings built: ${rawBlocks.length} blocks (raw + enriched)`)
+      console.log(`[api] embeddings built: ${rawBlocks.length} blocks`)
     } catch (e) {
       embedState.status = 'error'; embedState.error = e.message
       console.error('[api] embeddings build failed:', e.message)
@@ -702,155 +676,6 @@ async function semanticSupplement(baseDir, question, scopeRels) {
   const body = picks.map(x => x.b.disp).join('\n\n')
   return '\n\n[Related passages by MEANING (semantic search on the question — the ' +
     'wording may differ from your search terms; verify the value before using):]\n\n' + body
-}
-
-// ── Classic-RAG mode (retrieve-then-inject, single call, NO tools) ────────────
-// Port of afchat_lab/harness/rag_eval.py's v4 pipeline; all knobs come from the
-// package's `rag` block (SAME AGENT rule). MUST mirror _rrf/_build_prompt exactly:
-// hybrid RRF fusing only each channel's top fuse_top_n; doc-boost — top-2 files by
-// summed top-3 block scores get their best in-file semantic blocks (depths per
-// doc_boost_depths); final context ordered subject-file-first, semantic-best first
-// within each group.
-function ragRetrieve(question, index, qv) {
-  const R = AGENT?.rag || {}
-  const k = R.k || 12, c = R.rrf_c || 60, topN = R.fuse_top_n || 50
-  const depths = R.doc_boost_depths || [8, 4]
-  const n = index.length
-  const cos = index.map(b => cosine(qv, b.ragVec))
-  const sem = index.map((_, i) => i).sort((a, b) => (cos[b] - cos[a]) || (a - b)).slice(0, topN)
-  // Python's \w is Unicode; JS's is ASCII-only and would shred Hebrew — use \p{L}\p{N}.
-  // No dedupe: the lab keeps duplicate words (they weight BM25), mirror exactly.
-  const words = stripMarks(question.toLowerCase()).split(/[^\p{L}\p{N}_"']+/u).filter(w => w.length >= 2)
-  const ranked = rankBlocks(index.map((b, i) => ({ raw: b.enriched, disp: String(i) })), words)
-  const lex = ranked.map(b => parseInt(b.disp, 10)).slice(0, topN)
-  const score = new Map()
-  sem.forEach((i, rank) => score.set(i, (score.get(i) || 0) + 1 / (c + rank + 1)))
-  lex.forEach((i, rank) => score.set(i, (score.get(i) || 0) + 1 / (c + rank + 1)))
-  const ordered = [...score.keys()].sort((a, b) => (score.get(b) - score.get(a)) || (a - b))
-  const top = ordered.slice(0, k)
-  // doc boost
-  const byFile = new Map(), fileCount = new Map()
-  for (const i of ordered) {
-    const f = index[i].file
-    const cnt = (fileCount.get(f) || 0) + 1
-    fileCount.set(f, cnt)
-    if (cnt <= 3) byFile.set(f, (byFile.get(f) || 0) + score.get(i))
-  }
-  const topFiles = [...byFile.keys()].sort((a, b) => byFile.get(b) - byFile.get(a)).slice(0, 2)
-  topFiles.forEach((f, fi) => {
-    const depth = depths[fi] ?? 4
-    const infile = index.map((b, i) => i).filter(i => index[i].file === f)
-      .sort((a, b) => (cos[b] - cos[a]) || (a - b)).slice(0, depth)
-    for (const i of infile) if (!top.includes(i)) top.push(i)
-  })
-  const rankOf = new Map(topFiles.map((f, r) => [f, r]))
-  top.sort((a, b) => {
-    const ra = rankOf.has(index[a].file) ? rankOf.get(index[a].file) : 9
-    const rb = rankOf.has(index[b].file) ? rankOf.get(index[b].file) : 9
-    return (ra - rb) || (cos[b] - cos[a]) || (a - b)
-  })
-  return top.map(i => index[i])
-}
-
-function ragBuildPrompt(question, blocks) {
-  const budget = AGENT?.rag?.ctx_chars || 11000
-  const parts = []
-  let used = 0
-  for (const b of blocks) {
-    if (used + b.disp.length > budget && parts.length) break
-    parts.push(b.disp)
-    used += b.disp.length
-  }
-  return `Document excerpts:\n\n${parts.join('\n\n')}\n\nQuestion: ${question}`
-}
-
-// Stream a classic-RAG answer: retrieve → one model call, no tools. `model` must
-// be one of the package's rag.models (falls back to the package/production model).
-async function streamRagResponse({ writer, uiMessages, signal, model }) {
-  const send = (type, value) => writer.write(formatDataStreamPart(type, value))
-  const uiText = (m) => {
-    if (Array.isArray(m.parts)) {
-      const t = m.parts.filter(p => p.type === 'text').map(p => p.text).join('')
-      if (t) return t
-    }
-    return typeof m.content === 'string' ? m.content : ''
-  }
-  const question = [...(uiMessages || [])].reverse().find(m => m.role === 'user' && uiText(m))
-  const q = question ? uiText(question) : ''
-  send('start_step', { messageId: 'rag-step-0' })
-
-  // CHAT FIRST: a tiny router call decides whether this message needs the
-  // documents at all — a greeting must get a normal reply, not an excerpt dump.
-  // Defaults to 'docs' on any error (QA is the primary use).
-  let route = 'docs'
-  if (AGENT?.rag?.router_prompt) {
-    try {
-      const r = await fetch(`${OLLAMA_BASE}/api/chat`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model, stream: false, keep_alive: -1,
-          messages: [
-            { role: 'system', content: AGENT.rag.router_prompt },
-            { role: 'user', content: q },
-          ],
-          options: { temperature: 0, num_predict: 4, num_ctx: 2048 },
-          think: false,
-        }),
-        signal,
-      })
-      const out = ((await r.json())?.message?.content || '').toLowerCase()
-      if (out.includes('chat')) route = 'chat'
-    } catch { /* router unavailable → docs */ }
-  }
-  if (route === 'chat') {
-    const history = (uiMessages || []).slice(0, -1)
-      .filter(m => (m.role === 'user' || m.role === 'assistant') && uiText(m))
-      .map(m => ({ role: m.role, content: uiText(m) }))
-    const turn = await streamOneOllamaTurn({
-      messages: [
-        { role: 'system', content: AGENT?.rag?.chat_system_prompt || 'You are a helpful assistant.' },
-        ...history,
-        { role: 'user', content: q },
-      ],
-      ollamaTools: [], temp: AGENT?.runtime?.temperature ?? 0,
-      numCtx: AGENT?.model?.context_length || 8192, send, signal, modelOverride: model,
-    })
-    send('finish_step', { finishReason: 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens }, isContinued: false })
-    send('finish_message', { finishReason: 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens } })
-    return
-  }
-
-  const index = await loadIndexes(DOCS_PATH)
-  if (!index) {
-    // No blocking build inside a question — tell the user exactly what to do.
-    send('text', embedState.status === 'building'
-      ? 'האינדקס הסמנטי נבנה כעת — נסו שוב בעוד רגע (ניתן לעקוב אחר ההתקדמות בחלונית המסמכים).'
-      : 'מצב RAG דורש אינדקס סמנטי עדכני. פתחו את חלונית המסמכים ולחצו "בניית אינדקס", ואז שאלו שוב.')
-    send('finish_step', { finishReason: 'stop', usage: { promptTokens: 0, completionTokens: 0 }, isContinued: false })
-    send('finish_message', { finishReason: 'stop', usage: { promptTokens: 0, completionTokens: 0 } })
-    return
-  }
-  let qv = qvCache.get(q)
-  if (!qv) { qv = (await embed([q]))[0]; qvCache.set(q, qv) }
-  const blocks = ragRetrieve(q, index, qv)
-  const prompt = ragBuildPrompt(q, blocks)
-  // History (minus the last question) is kept so follow-ups read naturally, but
-  // retrieval is always for the LAST user question.
-  const history = (uiMessages || []).slice(0, -1)
-    .filter(m => (m.role === 'user' || m.role === 'assistant') && uiText(m))
-    .map(m => ({ role: m.role, content: uiText(m) }))
-  const messages = [
-    { role: 'system', content: AGENT?.rag?.system_prompt || '' },
-    ...history,
-    { role: 'user', content: prompt },
-  ]
-  const temp = AGENT?.runtime?.temperature ?? 0
-  const numCtx = AGENT?.model?.context_length || 8192
-  const turn = await streamOneOllamaTurn({
-    messages, ollamaTools: [], temp, numCtx, send, signal, modelOverride: model,
-  })
-  send('finish_step', { finishReason: 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens }, isContinued: false })
-  send('finish_message', { finishReason: 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens } })
 }
 
 async function grepCorpus({ pattern, path: scope, context }) {
@@ -1691,19 +1516,7 @@ const server = http.createServer(async (req, res) => {
       },
       execute: async (writer) => {
         try {
-          if (body.mode === 'rag' && AGENT?.rag) {
-            // Classic-RAG mode: retrieve-then-inject, single call, no tools.
-            // ONE model selector rules both modes: RAG uses the top-bar model
-            // (body.ragModel is kept as an API-level override for tests/scripts).
-            const model = body.ragModel || currentModel || (AGENT.rag.models || [])[0]
-            if (AGENT.rag.models?.length && !AGENT.rag.models.includes(model)) {
-              console.log(`[api] RAG mode with unvalidated model ${model} (validated: ${AGENT.rag.models.join(', ')})`)
-            }
-            console.log(`[api] RAG mode, model=${model}`)
-            await streamRagResponse({ writer, uiMessages: body.messages, signal: ac.signal, model })
-          } else {
-            await streamChatResponse({ writer, systemPrompt, uiMessages: body.messages, signal: ac.signal })
-          }
+          await streamChatResponse({ writer, systemPrompt, uiMessages: body.messages, signal: ac.signal })
         } catch (e) {
           if (ac.signal.aborted) return  // client stopped — end the stream quietly
           console.error('[api] chat stream error:', e?.message, '| cause:', e?.cause?.message || e?.cause || '(none)')
@@ -1751,13 +1564,9 @@ const server = http.createServer(async (req, res) => {
           return c
         } catch { return [] }
       }))
-      // Per-mode allowlists from the agent package: agentic_models for the tool
-      // loop, rag.models for classic RAG. A model may be valid in one mode only
-      // (e2b-qat is RAG-only; plain e2b is agentic-only) — the UI filters by the
-      // active mode via the per-model `modes` flags.
-      const agenticSet = new Set([AGENT?.model?.id, ...(AGENT?.agentic_models || [])].filter(Boolean))
-      const ragSet = new Set(AGENT?.rag?.models || [])
-      const validated = new Set([...agenticSet, ...ragSet])
+      // Allowlist from the agent package: the models validated for the agentic
+      // tool loop (the app's only mode — RAG mode was removed).
+      const validated = new Set([AGENT?.model?.id, ...(AGENT?.agentic_models || [])].filter(Boolean))
       const models = (data.models || [])
         .map((m, i) => ({ m, c: caps[i] }))
         .filter(({ c }) => c.includes('completion'))   // hide embedding-only models
@@ -1772,11 +1581,8 @@ const server = http.createServer(async (req, res) => {
           quantization: m.details?.quantization_level || null,
           family: m.details?.family || null,
           fitsInRAM: m.size < effectiveFreeFor(m) * 0.9,
-          toolsCapable: c.includes('tools'),           // agentic mode needs this
+          toolsCapable: c.includes('tools'),           // the agentic loop needs this
           validated: validated.has(m.name),            // in the agent package (tested)
-          modes: validated.size === 0
-            ? { agentic: true, rag: true }             // no package — don't restrict
-            : { agentic: agenticSet.has(m.name), rag: ragSet.has(m.name) },
         }))
         // validated first, then by size — the tested models lead the list
         .sort((a, b) => (b.validated - a.validated) || (a.size - b.size))
@@ -1840,17 +1646,11 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
-    // Same allowlists as GET /models. With a `mode` in the body, enforce that
-    // mode's list (agentic vs RAG); without one, any package-validated model passes.
-    const agenticAllowed = new Set([AGENT?.model?.id, ...(AGENT?.agentic_models || [])].filter(Boolean))
-    const ragAllowed = new Set(AGENT?.rag?.models || [])
-    const allowed = body.mode === 'rag' ? ragAllowed
-      : body.mode === 'agentic' ? agenticAllowed
-      : new Set([...agenticAllowed, ...ragAllowed])
-    const anyValidated = agenticAllowed.size + ragAllowed.size > 0
-    if (anyValidated && !allowed.has(body.model)) {
+    // Same allowlist as GET /models: only package-validated models are selectable.
+    const allowed = new Set([AGENT?.model?.id, ...(AGENT?.agentic_models || [])].filter(Boolean))
+    if (allowed.size > 0 && !allowed.has(body.model)) {
       res.writeHead(403, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: `Model "${body.model}" is not validated for ${body.mode || 'any'} mode (allowed: ${[...allowed].join(', ') || 'none'})` }))
+      res.end(JSON.stringify({ error: `Model "${body.model}" is not one of the validated models (${[...allowed].join(', ')})` }))
       return
     }
 
@@ -1988,7 +1788,6 @@ const server = http.createServer(async (req, res) => {
       error: embedState.error, builtAt: embedState.builtAt,
       blocks: memIndex ? memIndex.blocks.length : null,
       model: EMBED_MODEL,
-      ragModels: AGENT?.rag?.models || [],
     }))
     return
   }

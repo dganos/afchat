@@ -171,10 +171,10 @@ export function DocumentsPanel({ open, onClose }) {
             <>
               <p className="text-[11px] text-muted-foreground mb-2">
                 {embed.status === 'fresh'
-                  ? `${embed.blocks ?? '—'} blocks indexed (${embed.model}). Semantic search + RAG mode active.`
+                  ? `${embed.blocks ?? '—'} blocks indexed (${embed.model}). Semantic search active.`
                   : embed.status === 'error'
                     ? `Build failed: ${embed.error || 'unknown'} — is the embedding model (${embed.model}) available?`
-                    : 'Documents changed since the last build. Semantic search and RAG mode need a fresh index.'}
+                    : 'Documents changed since the last build. Semantic search needs a fresh index.'}
               </p>
               {embed.status !== 'fresh' && (
                 <button

@@ -9,7 +9,7 @@
     "context_length": 32768
   },
 
-  "_comment_agentic_models": "Models selectable in the Aristo UI for the AGENTIC tool-loop mode (model.id is always included). gemma4:e2b is the plain (non-QAT) e2b speed candidate. NOTE the QAT e2b (gemma4:e2b-it-qat) is deliberately NOT here — it is RAG-only: under the agentic contract it burns whole turns in the thinking channel (0% agentic, see afchat_lab/agents/gemma4-e2b-qat). rag.models below is the equivalent list for RAG mode.",
+  "_comment_agentic_models": "Models selectable in the Aristo UI (model.id is always included). gemma4:e2b is the plain (non-QAT) e2b speed candidate. NOTE the QAT e2b (gemma4:e2b-it-qat) is deliberately NOT here — under the agentic contract it burns whole turns in the thinking channel (0% agentic, see afchat_lab/agents/gemma4-e2b-qat). The rag block below is used only by the LAB's RAG benchmark — the app's RAG mode was removed.",
   "agentic_models": ["gemma-4-e4b:latest", "gemma4:e2b"],
 
   "_comment_embed_model": "Local embedding model for the semantic-retrieval supplement in search_content (rescues cross-language term-mismatch cases grep misses). Open, on-device via the bundled Ollama. Declared here — NOT hardcoded in the loop code — so lab and app read the SAME id/knobs and the bundle build can verify it is staged. A second model the bundle MUST ship alongside model.id.",

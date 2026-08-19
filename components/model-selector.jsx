@@ -22,9 +22,7 @@ function estimateLoadMs(sizeBytes) {
 
 // `inline` renders the picker as a block that expands in place (for the
 // Settings panel) instead of a compact header button with a floating dropdown.
-// `mode` ('agentic' | 'rag') filters the list to the models the agent package
-// validated for that mode; omitted = show all validated models.
-export function ModelSelector({ onModelChange, inline = false, mode = null }) {
+export function ModelSelector({ onModelChange, inline = false }) {
   const [open, setOpen] = useState(false)
   const [models, setModels] = useState([])
   const [currentModel, setCurrentModel] = useState('')
@@ -85,7 +83,7 @@ export function ModelSelector({ onModelChange, inline = false, mode = null }) {
       const res = await fetch(`${API}/models/select`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: name, mode: mode || undefined })
+        body: JSON.stringify({ model: name })
       })
       const data = await res.json()
       clearInterval(progressTimerRef.current)
@@ -129,21 +127,6 @@ export function ModelSelector({ onModelChange, inline = false, mode = null }) {
   }
 
   useEffect(() => () => clearInterval(progressTimerRef.current), [])
-
-  // Models valid for the active mode (the server marks per-mode validity;
-  // entries without `modes` — e.g. package failed to load — are never hidden).
-  const visibleModels = mode ? models.filter(m => m.modes?.[mode] !== false) : models
-
-  // If a mode switch left the current model outside that mode's allowlist
-  // (e.g. e2b-qat is RAG-only), auto-switch — preferring a model valid in BOTH
-  // modes (the production e4b) so flipping modes back and forth stays stable.
-  useEffect(() => {
-    if (!mode || switching || !currentModel || !models.length) return
-    const cur = models.find(m => m.name === currentModel)
-    if (!cur || !cur.modes || cur.modes[mode]) return
-    const fallback = models.find(m => m.modes?.agentic && m.modes?.rag) || visibleModels[0]
-    if (fallback) selectModel(fallback.name)
-  }, [mode, models, currentModel])  // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div ref={ref} className="relative">
@@ -206,10 +189,10 @@ export function ModelSelector({ onModelChange, inline = false, mode = null }) {
                 <HelicopterLoader className="h-5 w-5" />
                 Loading models...
               </div>
-            ) : visibleModels.length === 0 ? (
+            ) : models.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-6">No models found</p>
             ) : (
-              visibleModels.map((m, i) => (
+              models.map((m, i) => (
                 <button
                   key={m.name}
                   onClick={() => selectModel(m.name)}
@@ -229,7 +212,7 @@ export function ModelSelector({ onModelChange, inline = false, mode = null }) {
                         <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary-soft text-primary shrink-0">נבדק ✓</span>
                       )}
                       {m.toolsCapable === false && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-review text-review-text shrink-0" title="ללא תמיכה בכלים — מצב סוכן לא יעבוד; השתמשו במצב RAG">RAG בלבד</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-review text-review-text shrink-0" title="ללא תמיכה בכלים — הסוכן לא יוכל לחפש במסמכים">ללא כלים</span>
                       )}
                     </div>
                     <div className="flex gap-2 text-[11px] text-muted-foreground">

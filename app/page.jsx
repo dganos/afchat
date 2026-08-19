@@ -19,7 +19,7 @@ import { SettingsPanel } from '@/components/settings-panel'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { ContextMeter } from '@/components/context-meter'
 
-const DEFAULT_SETTINGS = { autoSearch: false, mode: 'agentic' }
+const DEFAULT_SETTINGS = { autoSearch: false }
 
 function loadSettings() {
   if (typeof window === 'undefined') return DEFAULT_SETTINGS
@@ -49,10 +49,6 @@ export default function ChatPage() {
   const compactionRef = useRef(null)
   const autoSearchRef = useRef(settings.autoSearch)
   useEffect(() => { autoSearchRef.current = settings.autoSearch }, [settings.autoSearch])
-  // Answer mode (agentic tool-loop vs classic RAG). The model for BOTH modes is
-  // whatever the top-bar selector chose — one selector, no per-mode model.
-  const modeRef = useRef(settings.mode)
-  useEffect(() => { modeRef.current = settings.mode }, [settings.mode])
 
   const { messages, setMessages, input, handleInputChange, handleSubmit, status, error, stop } = useChat({
     api: 'http://localhost:3001/chat',
@@ -63,7 +59,7 @@ export default function ChatPage() {
       const sent = c
         ? [{ role: 'assistant', content: c.summary, parts: [{ type: 'text', text: c.summary }] }, ...messages.slice(c.count)]
         : messages
-      return { messages: sent, autoSearch: autoSearchRef.current, mode: modeRef.current }
+      return { messages: sent, autoSearch: autoSearchRef.current }
     },
   })
 
