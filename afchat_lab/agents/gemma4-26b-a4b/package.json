@@ -1,0 +1,12 @@
+{
+  "name": "gemma4-26b-a4b",
+  "description": "Lab candidate: gemma4:26b-a4b-it-qat (stock registry, ~26B/4B-active QAT, ~16GB) under the production agentic contract. A5000/Z4 production candidate — needs 24GB VRAM. Stock gemma4 ⇒ stripped-tools-section prompt + think=false (same root cause as e2b-qat, see that candidate).",
+  "extends": "../../../packages/gemma4-qa",
+  "system_prompt_file": "system_prompt.md",
+  "model": {
+    "id": "gemma4:26b-a4b-it-qat",
+    "label": "gemma4-26b-a4b",
+    "context_length": 32768,
+    "think": false
+  }
+}

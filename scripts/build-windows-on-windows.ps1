@@ -228,6 +228,12 @@ if (-not (Test-Path $DocsDir) -or -not (Get-ChildItem $DocsDir -File -Recurse -E
 if (-not (Test-Path (Join-Path $ModelsDir 'blobs'))) { Die "no model store at $ModelsDir (need blobs\ + manifests\)." }
 Test-ModelStaged -Id $modelId -Kind 'agent'       # required: no model => every question 503-degrades
 Test-ModelStaged -Id $embedId -Kind 'embedding'   # supplement: missing => semantic retrieval no-ops
+# Alternate agentic models (package agentic_models): selectable in the UI — a missing
+# one just won't load when picked, but ship what the package declares (NOTE: the Z4
+# candidates qwen3:30b-a3b + gemma4:26b-a4b-it-qat add ~35GB to the bundle).
+foreach ($altId in @($pkgJson.agentic_models)) {
+  if ($altId -and $altId -ne $modelId) { Test-ModelStaged -Id $altId -Kind 'agentic-alt' }
+}
 
 Info "Build plan: model='$modelId', embed='$embedId', docs='$DocsDir', out='$Dist'"
 

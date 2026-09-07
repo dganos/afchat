@@ -1,12 +1,12 @@
 {
   "name": "qwen3-30b-a3b",
-  "description": "Lab candidate: Qwen3-30B-A3B-Instruct-2507 (MoE, 30B total / 3B active) at IQ2_M, under the production gemma4-qa agent contract (prompt/tools/runtime/retrieval supplements inherited). MoE throughput-vs-gemma test for the 16GB no-GPU target.",
+  "description": "Lab candidate: qwen3:30b-a3b (official registry, MoE 30B/3B, Q4_K_M ~19GB) under the production agentic contract. A5000/Z4 production candidate — needs 24GB VRAM; NOT runnable on the 16GB M1.",
   "extends": "../../../packages/gemma4-qa",
   "model": {
-    "id": "hf.co/unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:IQ2_M",
+    "id": "qwen3:30b-a3b",
     "label": "qwen3-30b-a3b",
-    "context_length": 16384,
+    "context_length": 32768,
     "think": false,
-    "_comment": "16k ctx like qwen3-14b: a ~10GB model + KV won't fit the M1 Pro 10.7GB GPU at 32k. Instruct-2507 is a non-thinking variant → think=false."
+    "_comment": "Q4 registry tag (the old IQ2 HF tag was the 16GB-CPU experiment). think=false per qwen3 lab policy."
   }
 }

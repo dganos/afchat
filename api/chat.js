@@ -1092,9 +1092,9 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
         body: JSON.stringify({
           model: modelOverride || currentModel, messages,
           tools: ollamaTools.length ? ollamaTools : undefined,
-          // Stock gemma4 models stall in the thinking channel mid-loop (lab-proven);
+          // Some families stall in the thinking channel mid-loop (lab-proven);
           // the field is only sent for them — other models may reject it.
-          think: isStockGemma4(modelOverride || currentModel) ? false : undefined,
+          think: needsThinkOff(modelOverride || currentModel) ? false : undefined,
           stream: true, keep_alive: -1,
           // num_predict comes from the shared agent package (same knob the lab
           // runs with — the lab must behave exactly like Aristo): bounds a
@@ -1171,6 +1171,9 @@ function isRefusal(text, markers) {
 // NOTE: measured agentic quality for e2b-it-qat is ~40% (it won't iterate
 // searches) vs 91% for the custom e4b — stock gemma4 shines in RAG mode instead.
 const isStockGemma4 = (m) => /^gemma4:/.test(m || '')
+// Families that must run the agentic loop with think:false (package-driven —
+// they stall in the thinking channel mid-loop; the custom e4b is exempt).
+const needsThinkOff = (m) => (AGENT?.think_off_prefixes || ['gemma4:']).some(p => (m || '').startsWith(p))
 function agenticPromptFor(model, prompt) {
   if (!isStockGemma4(model)) return prompt
   return prompt.replace(/\n## Your tools[\s\S]*?(?=\n## )/, '')
