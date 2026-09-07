@@ -1448,7 +1448,7 @@ const server = http.createServer(async (req, res) => {
       'X-Accel-Buffering': 'no',
     })
     const ac = new AbortController()
-    req.on('close', () => ac.abort())
+    res.on('close', () => { if (!res.writableEnded) ac.abort() })
     const send = (obj) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`) } catch {} }
     try {
       await runSpeedTest(send, ac.signal)
@@ -1502,7 +1502,17 @@ const server = http.createServer(async (req, res) => {
     // Real token streaming straight from Ollama (see streamChatResponse). The
     // output is the AI SDK data-stream protocol, so useChat needs no changes.
     const ac = new AbortController()
-    req.on('close', () => ac.abort())  // client stop() aborts the in-flight Ollama call
+    // Client-disconnect detection: req 'close' does NOT fire on mid-response
+    // disconnect in modern Node (it marks request-message completion), so an
+    // abandoned generation kept running and BLOCKED the next question behind
+    // Ollama's single-slot queue (reproduced: +52s TTFB after an abort). The
+    // reliable signal is the RESPONSE closing before we finished writing it.
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        console.log('[api] client disconnected mid-response — aborting Ollama call')
+        ac.abort()
+      }
+    })
     pipeDataStreamToResponse(res, {
       // Surface the real failure to the UI instead of a generic message. Ollama
       // returns a 500 when it can't load the model, which on this air-gapped
