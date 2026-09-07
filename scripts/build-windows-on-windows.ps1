@@ -46,6 +46,10 @@
 param(
   [switch]$Force,
   [switch]$RefreshOllama,
+  [switch]$SkipModels, # NEW distribution: installer only — models ship as per-model
+                       # release assets built by scripts/package-model-assets.py;
+                       # the operator extracts chosen model zip(s) + the core
+                       # (bge-m3) zip into resources\models after install.
   [switch]$Portable,   # build portable app+models zips instead of an NSIS installer
   [int]$SplitSizeMB = 1900,
   [string]$OllamaUrl = 'https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip'
@@ -333,6 +337,17 @@ else {
   $setup = Get-ChildItem $Dist -Filter 'Aristo-Setup-*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
   if (-not $setup) { Die 'NSIS installer (Aristo-Setup-*.exe) was not produced.' }
   Ok ("installer: {0}  ({1})" -f $setup.Name, (Get-SizeStr $setup.FullName))
+  if ($SkipModels) {
+    Write-Host ''
+    Write-Host 'Build complete (installer, NO models — standalone distribution)' -ForegroundColor Green
+    Write-Host 'Release / install:' -ForegroundColor Cyan
+    Write-Host ("  - Upload {0} plus the per-model assets from scripts/package-model-assets.py" -f $setup.Name)
+    Write-Host '    (Aristo-model-<name>.zip[.partNN] + Aristo-model-core-embeddings.zip + .sha256).'
+    Write-Host '  - Operator: run the installer, then extract the CORE zip and the chosen'
+    Write-Host '    model zip(s) into <install>esources\models and restart Aristo.'
+    Write-Host '    The model picker shows all menu models; uninstalled ones are greyed.'
+    return
+  }
   # Model store -> stored zip (entries: blobs/.., manifests/..), then split into the
   # parts the installer assembles next to itself. Always split so part00 exists.
   Ok 'model zip (store)...'
