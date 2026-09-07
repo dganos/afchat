@@ -195,8 +195,8 @@ export function ModelSelector({ onModelChange, inline = false }) {
               models.map((m, i) => (
                 <button
                   key={m.name}
-                  onClick={() => selectModel(m.name)}
-                  disabled={!!switching}
+                  onClick={() => m.installed !== false && selectModel(m.name)}
+                  disabled={!!switching || m.installed === false}
                   className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {/* Active indicator */}
@@ -216,7 +216,9 @@ export function ModelSelector({ onModelChange, inline = false }) {
                       )}
                     </div>
                     <div className="flex gap-2 text-[11px] text-muted-foreground">
-                      <span>{formatBytes(m.size)}</span>
+                      {m.installed === false
+                        ? <span className="text-review-text">לא מותקן — הורידו את חבילת המודל מה-Release והפעילו מחדש</span>
+                        : <span>{formatBytes(m.size)}</span>}
                       {m.parameterSize && <span>{m.parameterSize}</span>}
                       {m.quantization && <span>{m.quantization}</span>}
                     </div>

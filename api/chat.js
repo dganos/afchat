@@ -104,8 +104,18 @@ async function ensureCurrentModel() {
       currentModel = fromPkg
       console.log(`[api] using agent-package model: ${currentModel}`)
     } else {
-      modelError = `The bundled model "${AGENT?.model?.id || '(none)'}" was not found in the app's model store.`
-      console.error(`[api] ${modelError}`)
+      // Models ship as standalone release assets — the user may have installed a
+      // DIFFERENT allowlisted model than the package default. Fall back to any
+      // installed allowlisted model (never to an arbitrary system model).
+      const installed = new Set((data.models || []).map(m => m.name))
+      const alt = (AGENT?.agentic_models || []).find(id => installed.has(id))
+      if (alt) {
+        currentModel = alt
+        console.log(`[api] package default absent; using installed allowlisted model: ${currentModel}`)
+      } else {
+        modelError = `No allowlisted model installed. Download one of the model packages (${(AGENT?.agentic_models || []).join(', ')}) from the release and extract it into resources/models.`
+        console.error(`[api] ${modelError}`)
+      }
     }
   } catch (err) {
     console.error('[api] could not reach the bundled Ollama:', err.message)
@@ -1580,7 +1590,7 @@ const server = http.createServer(async (req, res) => {
       // Allowlist from the agent package: the models validated for the agentic
       // tool loop (the app's only mode — RAG mode was removed).
       const validated = new Set([AGENT?.model?.id, ...(AGENT?.agentic_models || [])].filter(Boolean))
-      const models = (data.models || [])
+      const installedList = (data.models || [])
         .map((m, i) => ({ m, c: caps[i] }))
         .filter(({ c }) => c.includes('completion'))   // hide embedding-only models
         // Only the package-validated models are selectable. Other pulled models
@@ -1596,7 +1606,17 @@ const server = http.createServer(async (req, res) => {
           fitsInRAM: m.size < effectiveFreeFor(m) * 0.9,
           toolsCapable: c.includes('tools'),           // the agentic loop needs this
           validated: validated.has(m.name),            // in the agent package (tested)
+          installed: true,
         }))
+      // The package menu is THE menu: models ship as standalone release assets,
+      // so an allowlisted model may not be on disk yet — still show it (greyed in
+      // the UI with a download hint) so the user sees the full choice of three.
+      const installedNames = new Set(installedList.map(m => m.name))
+      const missing = [...validated]
+        .filter(n => n && !installedNames.has(n))
+        .map(n => ({ name: n, size: 0, parameterSize: null, quantization: null, family: null,
+                     fitsInRAM: true, toolsCapable: true, validated: true, installed: false }))
+      const models = [...installedList, ...missing]
         // validated first, then by size — the tested models lead the list
         .sort((a, b) => (b.validated - a.validated) || (a.size - b.size))
 

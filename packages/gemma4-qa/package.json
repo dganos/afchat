@@ -1,16 +1,15 @@
 {
   "name": "gemma4-qa",
-  "version": 12,
+  "version": 13,
   "description": "QA over a document corpus. The model is not handed the documents — it must use read-only filesystem tools to find and read the right passage, then answer grounded in the text. Single source of truth for both afchat_lab (Python) and the Aristo app (JS): both load this package and supply only the tool implementations for their runtime.",
   "model": {
     "id": "gemma-4-e4b:latest",
     "label": "gemma-4-e4b",
     "context_length": 32768
   },
-  "_comment_agentic_models": "Models selectable in the Aristo UI (model.id is always included). gemma4:e2b = small/fast (M1-class). qwen3:30b-a3b (MoE 30B/3B, Q4, ~19GB) and gemma4:26b-a4b-it-qat (MoE-ish 26B/4B QAT, ~16GB) are the A5000/24GB-VRAM production candidates — VALIDATE on the Z4 with the lab 50Q before promoting either to model.id (see afchat_lab/Z4-VALIDATION.md). e2b-it-qat deliberately absent (0% agentic — thinking-channel stall).",
+  "_comment_agentic_models": "THE model menu: exactly what the end user sees and chooses from, installed or not (the app shows uninstalled entries greyed with a download hint — models ship as STANDALONE GitHub release assets, one zip per model, built by scripts/package-model-assets.py; the Aristo installer contains NO chat models). Validation state: gemma-4-e4b = production 91%; qwen3:30b-a3b + gemma4:26b-a4b-it-qat = A5000/Z4 candidates pending the 50Q (afchat_lab/Z4-VALIDATION.md).",
   "agentic_models": [
     "gemma-4-e4b:latest",
-    "gemma4:e2b",
     "qwen3:30b-a3b",
     "gemma4:26b-a4b-it-qat"
   ],
