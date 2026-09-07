@@ -169,3 +169,50 @@ lsof -ti:11434 | xargs kill
 ## License
 
 Private — not licensed for redistribution.
+
+## Releasing (checklist)
+
+The app and the models ship as **separate assets in one GitHub release**: the
+installer contains no chat models; each model is its own download, and the app's
+model picker shows the full menu (installed models selectable, missing ones
+greyed with a download hint). Details: [RELEASE-ASSETS.md](RELEASE-ASSETS.md).
+
+### 1. Build the model assets (any machine with the models pulled)
+
+- [ ] `python3 scripts/package-model-assets.py`
+      → `dist/Aristo-model-*.zip[.partNN]` + `.sha256` for every model in the
+      package's `agentic_models` menu, plus the **required** core zip (bge-m3).
+
+### 2. Build the installer (on Windows)
+
+- [ ] `git pull`
+- [ ] `powershell -File scripts\build-windows-on-windows.ps1 -SkipModels`
+      → `dist\Aristo-Setup-<ver>.exe` (no models inside; the build stage-checks
+      the menu models and warns if any is missing from the local store — that's
+      fine with `-SkipModels`).
+
+### 3. Publish
+
+- [ ] Create the GitHub release; upload the installer **and** every
+      `Aristo-model-*` file (parts + `.sha256` sidecars).
+      `scripts/upload-release-assets.ps1` auto-discovers `dist\` assets and
+      streams multi-GB files reliably.
+- [ ] Paste the operator instructions from
+      [RELEASE-ASSETS.md](RELEASE-ASSETS.md) into the release notes
+      (rejoin command, extract into `resources\models`, restart).
+
+### 4. Smoke-test an install
+
+- [ ] Run the installer on a clean machine, extract the core zip + ONE model
+      zip into `<install>\resources\models`, start Aristo.
+- [ ] Picker shows all menu models; only the installed one is selectable.
+- [ ] Ask a document question (grounded answer with a file citation), then
+      stop an answer mid-stream and ask again (should respond at normal speed —
+      the log line `client disconnected mid-response` confirms the abort fired).
+
+### Model promotion (when the Z4 validation picks a winner)
+
+- [ ] Run the 50Q on the target hardware per
+      [afchat_lab/Z4-VALIDATION.md](afchat_lab/Z4-VALIDATION.md) (bar: ≥ 89–91%).
+- [ ] Set `model.id` in `packages/gemma4-qa/package.json` to the winner.
+- [ ] Re-run steps 1–4.
