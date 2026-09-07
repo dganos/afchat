@@ -30,6 +30,7 @@ const buildOllamaTools = () => []
 const capToolResult = (x) => x
 const formatDataStreamPart = () => ''
 let currentQuestion = ''
+let currentModel = 'gemma-4-e4b:latest'  // module state referenced by the loop
 let TOOL_IMPLS = {}
 let streamOneOllamaTurn = async () => ({ content: '', toolCalls: [], promptTokens: 0, completionTokens: 0 })
 
