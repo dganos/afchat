@@ -168,6 +168,26 @@ app.whenReady().then(async () => {
     mainWindow.loadFile(path.join(__dirname, 'out/index.html'))
   }
 
+  // The Learning window: the chat page calls window.open('?view=learning'). Open it
+  // as one dedicated window (focus it if already open) with the same web prefs.
+  let learningWindow = null
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (!url.includes('view=learning')) return { action: 'allow' }  // unchanged default for other links
+    if (learningWindow && !learningWindow.isDestroyed()) {
+      learningWindow.focus()
+      return { action: 'deny' }
+    }
+    learningWindow = new BrowserWindow({
+      width: 1200,
+      height: 860,
+      title: 'Aristo — למידה',
+      webPreferences: { nodeIntegration: false, contextIsolation: true, webSecurity: false },
+    })
+    learningWindow.loadURL(url)
+    learningWindow.on('closed', () => { learningWindow = null })
+    return { action: 'deny' }
+  })
+
   // Flush early logs once page is ready
   mainWindow.webContents.on('did-finish-load', () => {
     earlyLogs.forEach(({ source, text }) => {

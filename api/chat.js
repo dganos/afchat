@@ -4,6 +4,7 @@ const fs = require('fs')
 const os = require('os')
 const crypto = require('crypto')
 const { createOllama } = require('ollama-ai-provider')
+const { createLearning } = require('./learning')
 const { streamText, generateText, wrapLanguageModel, extractReasoningMiddleware, jsonSchema, pipeDataStreamToResponse, formatDataStreamPart } = require('ai')
 
 // Like the AI SDK's smoothStream, but paces BOTH the answer (`text-delta`) and
@@ -1075,7 +1076,7 @@ const isTransientNetErr = (e) =>
 // gemma's text-shaped form) and returns them for the caller to execute. Retries
 // once on a transient connection reset, but only while nothing has been emitted
 // yet (so a mid-stream drop can't duplicate output).
-async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, signal, modelOverride }) {
+async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, signal, modelOverride, knownTools }) {
   // Retry depth from the shared recovery policy (SAME AGENT as the lab). Streaming
   // can only safely retry BEFORE anything is emitted (see the !emitted guard below),
   // so a mid-stream drop still surfaces — that constraint is inherent to streaming.
@@ -1153,7 +1154,8 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
     // gemma fallback: a tool call left as raw text rather than a structured field.
     if (!toolCalls.length && TEXT_CALL_RE.test(content)) {
       const repaired = repairGemmaToolCall(content)
-      if (repaired && TOOL_IMPLS[repaired.name]) {
+      const isKnown = (n) => (knownTools ? knownTools.includes(n) : !!TOOL_IMPLS[n])
+      if (repaired && isKnown(repaired.name)) {
         toolCalls.push({ id: `call_0_${repaired.name}`, name: repaired.name, args: repaired.arguments })
       }
     }
@@ -1190,8 +1192,12 @@ function agenticPromptFor(model, prompt) {
 }
 
 // Drive the full multi-step agent loop, writing AI SDK data-stream parts.
-async function streamChatResponse({ writer, systemPrompt, uiMessages, signal }) {
+async function streamChatResponse({ writer, systemPrompt, uiMessages, signal, annotations }) {
   const send = (type, value) => writer.write(formatDataStreamPart(type, value))
+  // Per-request id prefix: the SDK copies start_step messageIds onto the assistant
+  // message, so a fixed 'aristo-step-N' made every answer share one id.
+  const rid = Math.random().toString(36).slice(2, 10)
+  if (annotations) send('message_annotations', annotations)
   const temp = AGENT?.runtime?.temperature ?? 0
   const numCtx = AGENT?.model?.context_length || 8192
   const maxSteps = AGENT?.runtime?.max_steps || 10
@@ -1230,7 +1236,7 @@ async function streamChatResponse({ writer, systemPrompt, uiMessages, signal }) 
   let promptTokens = 0, completionTokens = 0
   let emptyRetry = false, pointerRetry = false, unfollowedPointer = false, answered = false
   for (let step = 0; step < maxSteps; step++) {
-    send('start_step', { messageId: `aristo-step-${step}` })
+    send('start_step', { messageId: `aristo-${rid}-step-${step}` })
     const turn = await streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, signal })
     promptTokens += turn.promptTokens
     completionTokens += turn.completionTokens
@@ -1287,7 +1293,7 @@ async function streamChatResponse({ writer, systemPrompt, uiMessages, signal }) 
   // or blank — mirroring the lab's out-of-steps behaviour.
   if (!answered) {
     messages.push({ role: 'user', content: recFinal })
-    send('start_step', { messageId: 'aristo-step-final' })
+    send('start_step', { messageId: `aristo-${rid}-step-final` })
     const turn = await streamOneOllamaTurn({ messages, ollamaTools: [], temp, numCtx, send, signal })
     promptTokens += turn.promptTokens
     completionTokens += turn.completionTokens
@@ -1299,7 +1305,7 @@ async function streamChatResponse({ writer, systemPrompt, uiMessages, signal }) 
 const server = http.createServer(async (req, res) => {
   // CORS headers — required for Electron renderer to call this
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
   if (req.method === 'OPTIONS') {
@@ -1387,6 +1393,7 @@ const server = http.createServer(async (req, res) => {
           fs.writeFileSync(SYSTEM_PROMPT_OVERRIDE, prompt, 'utf-8')
         } catch (e) { console.warn('[api] could not persist system-prompt override:', e.message) }
       }
+      learning.recordManual(currentSystemPrompt, { reset: !!body.reset })  // every prompt change is a version
       console.log(`[api] system prompt reloaded (${currentSystemPrompt.length} chars)${body.reset ? ' [reset to default]' : ''}`)
       reprimeSystemPrompt()  // fire-and-forget: warm the new prefix so the next message is fast
       res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -1503,6 +1510,7 @@ const server = http.createServer(async (req, res) => {
     // Auto pre-search: inject document context if enabled. The base prompt is the
     // current (possibly user-edited) system prompt.
     let systemPrompt = currentSystemPrompt
+    const promptVersion = learning.activeVersion()  // snapshot: stamped on the answer for feedback
     if (body.autoSearch && lastMsg?.role === 'user') {
       const searchResults = await autoSearch(lastMsg.content)
       if (searchResults) {
@@ -1539,7 +1547,7 @@ const server = http.createServer(async (req, res) => {
       },
       execute: async (writer) => {
         try {
-          await streamChatResponse({ writer, systemPrompt, uiMessages: body.messages, signal: ac.signal })
+          await streamChatResponse({ writer, systemPrompt, uiMessages: body.messages, signal: ac.signal, annotations: [{ prompt_version: promptVersion, model: currentModel }] })
         } catch (e) {
           if (ac.signal.aborted) return  // client stopped — end the stream quietly
           console.error('[api] chat stream error:', e?.message, '| cause:', e?.cause?.message || e?.cause || '(none)')
@@ -1912,8 +1920,34 @@ const server = http.createServer(async (req, res) => {
     return
   }
 
+  // Continuous Learning: feedback, prompt versions, compile sessions (api/learning.js)
+  if (await learning.handle(req, res)) return
+
   res.writeHead(404)
   res.end()
+})
+
+// Created after the loop code so loop-conformance.test.js (which slices chat.js up
+// to `const server`) needn't mock it; only referenced at request time.
+const learning = createLearning({
+  dataDir: DATA_DIR,
+  packagePrompt: () => AGENT?.system_prompt || '',
+  currentPrompt: () => currentSystemPrompt,
+  applyPrompt: (text) => {
+    currentSystemPrompt = text
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true })
+      fs.writeFileSync(SYSTEM_PROMPT_OVERRIDE, text, 'utf-8')
+    } catch (e) { console.warn('[api] could not persist system-prompt override:', e.message) }
+    reprimeSystemPrompt()
+  },
+  currentModel: () => currentModel,
+  numCtx: AGENT?.model?.context_length || 8192,
+  streamOneOllamaTurn,
+  listDirectory: (args) => TOOL_IMPLS.list_directory(args),
+  listDocs: () => { try { return walkDir(DOCS_PATH) } catch { return [] } },
+  pipeDataStreamToResponse,
+  formatDataStreamPart,
 })
 
 server.listen(3001, () => {

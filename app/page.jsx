@@ -9,7 +9,7 @@ import { Message, MessageContent } from '@/components/ai-elements/message'
 import { PromptInput, PromptInputTextarea, PromptInputSubmit } from '@/components/ai-elements/prompt-input'
 import { Tool } from '@/components/ai-elements/tool'
 import { Reasoning } from '@/components/ai-elements/reasoning'
-import { FolderOpen, Settings2, Archive } from 'lucide-react'
+import { FolderOpen, Settings2, Archive, GraduationCap } from 'lucide-react'
 import { HelicopterLoader } from '@/components/helicopter-loader'
 import { ResponseTimer } from '@/components/response-timer'
 import { LogsPanel } from '@/components/logs-panel'
@@ -18,6 +18,22 @@ import { MemoryMeter } from '@/components/memory-meter'
 import { SettingsPanel } from '@/components/settings-panel'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { ContextMeter } from '@/components/context-meter'
+import { ScoreRow } from '@/components/score-row'
+import { LearningApp } from '@/components/learning/learning-app'
+
+const textOf = (m) => (m?.parts || []).filter((p) => p.type === 'text').map((p) => p.text).join('').trim() || m?.content || ''
+
+// The Learning window loads this same page with ?view=learning (the packaged app
+// serves a static export over file://, where a nested route can't resolve assets).
+export default function Page() {
+  const [view, setView] = useState(null)
+  useEffect(() => { setView(new URLSearchParams(window.location.search).get('view') || 'chat') }, [])
+  if (view === null) return null
+  return view === 'learning' ? <LearningApp /> : <ChatPage />
+}
+
+// Same named window every time → the browser/Electron focuses it instead of opening another.
+const openLearning = () => window.open('?view=learning', 'aristo-learning')
 
 const DEFAULT_SETTINGS = { autoSearch: false }
 
@@ -29,7 +45,7 @@ function loadSettings() {
   } catch { return DEFAULT_SETTINGS }
 }
 
-export default function ChatPage() {
+function ChatPage() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [settingsOpen, setSettingsOpen] = useState(false)
 
@@ -160,6 +176,14 @@ export default function ChatPage() {
         <div className="ms-auto flex items-center gap-1">
           <ContextMeter messages={effectiveContext} onCompact={compactContext} compacting={compacting} />
           <MemoryMeter />
+          <button
+            onClick={openLearning}
+            aria-label="למידה"
+            className="flex items-center gap-1.5 px-2.5 min-h-9 text-xs text-fg-muted rounded-md hover:bg-surface-2 hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <GraduationCap className="h-3.5 w-3.5" />
+            למידה
+          </button>
           <button
             onClick={() => setDocsOpen(true)}
             aria-label="מסמכים"
@@ -303,6 +327,15 @@ export default function ChatPage() {
                   return null
                 })}
               </MessageContent>
+              {msg.role === 'assistant' && !(isBusy && msg === messages[messages.length - 1]) && textOf(msg) && (
+                <ScoreRow
+                  msgId={msg.id}
+                  question={textOf(messages.slice(0, idx).reverse().find((m) => m.role === 'user'))}
+                  answer={textOf(msg)}
+                  promptVersion={msg.annotations?.find((a) => a && a.prompt_version != null)?.prompt_version}
+                  model={msg.annotations?.find((a) => a && a.model)?.model}
+                />
+              )}
             </Message>
             </Fragment>
           ))}
