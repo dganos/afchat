@@ -1071,6 +1071,36 @@ const TRANSIENT_NET_RE = /ECONNRESET|fetch failed|socket hang up|other side clos
 const isTransientNetErr = (e) =>
   TRANSIENT_NET_RE.test(`${e?.message || ''} ${e?.cause?.message || e?.cause || ''}`)
 
+// Transport for the streaming /api/chat call. NOT the global fetch: Node's fetch
+// (undici) has hidden 300s headersTimeout/bodyTimeout. Ollama sends its response
+// headers only after model load + the whole prompt prefill + the first token, so a
+// long CPU prefill tripped headersTimeout as a generic "fetch failed" — which the
+// transient-retry above then silently retried (re-paying the prefill) up to 3x
+// before any error reached the UI. Plain http has no hidden timeouts; instead we
+// apply ONE explicit, configurable idle timeout (no bytes from Ollama for that
+// long, before or between chunks) that fails loudly and is never retried.
+// agent:false = a fresh localhost socket per turn, so no stale keep-alive reuse.
+const OLLAMA_IDLE_TIMEOUT_MS = parseInt(process.env.ARISTO_OLLAMA_IDLE_TIMEOUT_MS, 10) || 20 * 60 * 1000
+class OllamaStreamError extends Error {}
+// Resolves { res, failure } once headers arrive; failure.err is set if the idle
+// timeout later kills the body (the body iterator then throws a generic 'aborted').
+function postOllamaStream(pathname, payload, signal) {
+  const failure = { err: null }
+  return new Promise((resolve, reject) => {
+    const req = http.request(`${OLLAMA_BASE}${pathname}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, agent: false, signal,
+    }, (res) => resolve({ res, failure }))
+    req.on('error', (e) => reject(failure.err || e))
+    req.setTimeout(OLLAMA_IDLE_TIMEOUT_MS, () => {
+      failure.err = new OllamaStreamError(
+        `המודל לא שלח נתונים במשך ${Math.round(OLLAMA_IDLE_TIMEOUT_MS / 1000)} שניות — הבקשה בוטלה. ` +
+        `(Ollama idle timeout: no bytes for ${OLLAMA_IDLE_TIMEOUT_MS} ms; set ARISTO_OLLAMA_IDLE_TIMEOUT_MS to change)`)
+      req.destroy(failure.err)
+    })
+    req.end(JSON.stringify(payload))
+  })
+}
+
 // Stream a single assistant turn from Ollama, forwarding thinking → `reasoning`
 // and answer text → `text` parts live. Detects tool calls (structured, or
 // gemma's text-shaped form) and returns them for the caller to execute. Retries
@@ -1084,6 +1114,7 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
   for (let attempt = 0; ; attempt++) {
     const dec = new TextDecoder()
     let buf = '', content = '', sentLen = 0, frozen = false, emitted = false
+    let gotDone = false, doneReason = null, thinkingChars = 0
     const toolCalls = []
     let promptTokens = 0, completionTokens = 0
 
@@ -1097,53 +1128,72 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
       if (upto > sentLen) { send('text', content.slice(sentLen, upto)); sentLen = upto; emitted = true }
     }
 
+    let failure = { err: null }
     try {
-      const r = await fetch(`${OLLAMA_BASE}/api/chat`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: modelOverride || currentModel, messages,
-          tools: ollamaTools.length ? ollamaTools : undefined,
-          // Some families stall in the thinking channel mid-loop (lab-proven);
-          // the field is only sent for them — other models may reject it.
-          think: needsThinkOff(modelOverride || currentModel) ? false : undefined,
-          stream: true, keep_alive: -1,
-          // num_predict comes from the shared agent package (same knob the lab
-          // runs with — the lab must behave exactly like Aristo): bounds a
-          // runaway generation instead of letting it run until abort/timeout.
-          options: { temperature: temp, num_ctx: numCtx, num_predict: AGENT?.runtime?.num_predict || undefined, num_thread: NUM_THREAD },
-        }),
-        signal,
-      })
-      if (!r.ok) {
-        const detail = (await r.text().catch(() => '')).slice(0, 300)
-        throw new Error(`Ollama /api/chat returned ${r.status}. ${detail}`)
+      const sent = await postOllamaStream('/api/chat', {
+        model: modelOverride || currentModel, messages,
+        tools: ollamaTools.length ? ollamaTools : undefined,
+        // Some families stall in the thinking channel mid-loop (lab-proven);
+        // the field is only sent for them — other models may reject it.
+        think: needsThinkOff(modelOverride || currentModel) ? false : undefined,
+        stream: true, keep_alive: -1,
+        // num_predict comes from the shared agent package (same knob the lab
+        // runs with — the lab must behave exactly like Aristo): bounds a
+        // runaway generation instead of letting it run until abort/timeout.
+        options: { temperature: temp, num_ctx: numCtx, num_predict: AGENT?.runtime?.num_predict || undefined, num_thread: NUM_THREAD },
+      }, signal)
+      const r = sent.res
+      failure = sent.failure
+      if (r.statusCode < 200 || r.statusCode >= 300) {
+        let detail = ''
+        try { for await (const c of r) detail += c } catch { /* ignore */ }
+        throw new Error(`Ollama /api/chat returned ${r.statusCode}. ${detail.slice(0, 300)}`)
       }
 
-      for await (const chunk of r.body) {
+      const handleLine = (raw) => {
+        const line = raw.trim()
+        if (!line) return
+        let d; try { d = JSON.parse(line) } catch { return }
+        // Ollama reports a failure AFTER the 200 headers (runner crash, OOM, ...) as
+        // an {"error": "..."} line. Previously ignored → the answer just stopped.
+        if (d.error) throw new OllamaStreamError(`Ollama error mid-stream: ${d.error}`)
+        const msg = d.message || {}
+        if (msg.thinking) { send('reasoning', msg.thinking); emitted = true; thinkingChars += msg.thinking.length }
+        if (Array.isArray(msg.tool_calls)) {
+          for (const tc of msg.tool_calls) {
+            const fn = tc.function || {}
+            let args = fn.arguments
+            if (typeof args === 'string') { try { args = JSON.parse(args) } catch { args = {} } }
+            toolCalls.push({ id: `call_${toolCalls.length}_${fn.name}`, name: fn.name, args: args || {} })
+          }
+        }
+        if (msg.content) { content += msg.content; flushContent() }
+        if (d.done) {
+          gotDone = true; doneReason = d.done_reason || 'stop'
+          promptTokens = d.prompt_eval_count || 0; completionTokens = d.eval_count || 0
+        }
+      }
+      for await (const chunk of r) {
         buf += dec.decode(chunk, { stream: true })
         let nl
         while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1)
-          if (!line) continue
-          let d; try { d = JSON.parse(line) } catch { continue }
-          const msg = d.message || {}
-          if (msg.thinking) { send('reasoning', msg.thinking); emitted = true }
-          if (Array.isArray(msg.tool_calls)) {
-            for (const tc of msg.tool_calls) {
-              const fn = tc.function || {}
-              let args = fn.arguments
-              if (typeof args === 'string') { try { args = JSON.parse(args) } catch { args = {} } }
-              toolCalls.push({ id: `call_${toolCalls.length}_${fn.name}`, name: fn.name, args: args || {} })
-            }
-          }
-          if (msg.content) { content += msg.content; flushContent() }
-          if (d.done) { promptTokens = d.prompt_eval_count || 0; completionTokens = d.eval_count || 0 }
+          const line = buf.slice(0, nl); buf = buf.slice(nl + 1)
+          handleLine(line)
         }
       }
+      buf += dec.decode()
+      handleLine(buf)  // a final line without a trailing newline
+      // The HTTP body ended but Ollama never sent its done:true line: the runner
+      // died / the connection was cut mid-generation. Previously the partial text
+      // was silently accepted as the final answer.
+      if (!gotDone) {
+        throw new OllamaStreamError('החיבור למודל נקטע באמצע התשובה. (Ollama stream ended without a done line — the model runner may have crashed, e.g. low RAM; see the ollama log)')
+      }
     } catch (e) {
+      if (failure.err) e = failure.err  // idle timeout surfaced as a generic 'aborted'
       // Retry a fresh connection once if Ollama dropped the socket before we
       // streamed anything; otherwise surface the failure.
-      if (attempt < transientRetries - 1 && !emitted && !signal.aborted && isTransientNetErr(e)) {
+      if (!(e instanceof OllamaStreamError) && attempt < transientRetries - 1 && !emitted && !signal.aborted && isTransientNetErr(e)) {
         console.log(`[api] chat: transient Ollama connection drop, retrying (attempt ${attempt + 1}/${transientRetries})`)
         await new Promise((r) => setTimeout(r, 150 * (attempt + 1)))
         continue
@@ -1159,9 +1209,19 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
         toolCalls.push({ id: `call_0_${repaired.name}`, name: repaired.name, args: repaired.arguments })
       }
     }
+    // A text-shaped tool call we could NOT execute (unparseable / unknown tool):
+    // output was frozen at the `call:` marker, so the client never saw that text.
+    // Returning it as `content` made the loop accept an answer the user never got
+    // (bubble just stops). Drop the call span; if nothing real remains the turn is
+    // empty and the normal empty-turn recovery applies.
+    if (!toolCalls.length && frozen) {
+      const m = content.match(TEXT_CALL_RE)
+      content = (m ? content.slice(0, m.index) : content).replace(/<\|?tool_call\|?>\s*$/, '')
+      frozen = false
+    }
     if (!toolCalls.length) flushContent(true)  // final answer: flush the held tail
 
-    return { content, toolCalls, promptTokens, completionTokens }
+    return { content, toolCalls, promptTokens, completionTokens, doneReason, thinkingChars }
   }
 }
 
@@ -1235,6 +1295,7 @@ async function streamChatResponse({ writer, systemPrompt, uiMessages, signal, an
 
   let promptTokens = 0, completionTokens = 0
   let emptyRetry = false, pointerRetry = false, unfollowedPointer = false, answered = false
+  let finalTurn = null  // the turn whose content is the answer the user got
   for (let step = 0; step < maxSteps; step++) {
     send('start_step', { messageId: `aristo-${rid}-step-${step}` })
     const turn = await streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, signal })
@@ -1283,8 +1344,9 @@ async function streamChatResponse({ writer, systemPrompt, uiMessages, signal, an
       continue
     }
 
-    send('finish_step', { finishReason: 'stop', usage: stepUsage, isContinued: false })
+    send('finish_step', { finishReason: turn.doneReason === 'length' ? 'length' : 'stop', usage: stepUsage, isContinued: false })
     answered = true
+    finalTurn = turn
     break
   }
 
@@ -1297,9 +1359,44 @@ async function streamChatResponse({ writer, systemPrompt, uiMessages, signal, an
     const turn = await streamOneOllamaTurn({ messages, ollamaTools: [], temp, numCtx, send, signal })
     promptTokens += turn.promptTokens
     completionTokens += turn.completionTokens
-    send('finish_step', { finishReason: 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens }, isContinued: false })
+    send('finish_step', { finishReason: turn.doneReason === 'length' ? 'length' : 'stop', usage: { promptTokens: turn.promptTokens, completionTokens: turn.completionTokens }, isContinued: false })
+    finalTurn = turn
+  }
+
+  // Never end the message silently. The recovery policy (shared with the lab) may
+  // still ACCEPT an empty turn (e.g. thinking-only twice) or a length-capped one;
+  // the stream used to then close with a normal finish and the bubble just showed
+  // the thinking (or half a sentence) and stopped. Tell the user instead — an
+  // `error` part makes useChat show the error box under the partial answer.
+  const problem = visibleOutcomeProblem(finalTurn)
+  if (problem) {
+    console.error(`[api] chat: ${problem.log}`)
+    send('error', problem.ui)
+    return
   }
   send('finish_message', { finishReason: 'stop', usage: { promptTokens, completionTokens } })
+}
+
+// Why the final answer turn is not a complete, visible answer (null if it is).
+function visibleOutcomeProblem(turn) {
+  if (!turn) return null
+  const np = AGENT?.runtime?.num_predict
+  const why = `done_reason=${turn.doneReason ?? 'n/a'}, thinking=${turn.thinkingChars ?? 0} chars, answer=${(turn.content || '').trim().length} chars, num_predict=${np ?? 'unset'}`
+  if (!(turn.content || '').trim()) {
+    return {
+      log: `no answer text after recovery (${why})`,
+      ui: turn.doneReason === 'length'
+        ? `המודל הגיע למגבלת אורך הפלט בזמן החשיבה ולא הספיק לכתוב תשובה. נסו שוב או נסחו את השאלה בצורה ממוקדת יותר. (no answer: ${why})`
+        : `המודל סיים בלי לכתוב תשובה (רק חשיבה). נסו לשאול שוב. (no answer: ${why})`,
+    }
+  }
+  if (turn.doneReason === 'length') {
+    return {
+      log: `answer truncated by the output limit (${why})`,
+      ui: `התשובה נקטעה: המודל הגיע למגבלת אורך הפלט לפני שסיים. (truncated: ${why})`,
+    }
+  }
+  return null
 }
 
 const server = http.createServer(async (req, res) => {
@@ -1493,15 +1590,23 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'No models installed. Pull one with `ollama pull <model>`.' }))
       return
     }
-    // Parse request body
-    const body = await new Promise((resolve, reject) => {
-      let data = ''
-      req.on('data', chunk => { data += chunk })
-      req.on('end', () => {
-        try { resolve(JSON.parse(data)) }
-        catch (e) { reject(e) }
+    // Parse request body. A rejection here used to be unhandled → the request got
+    // no response at all and the UI waited forever.
+    let body
+    try {
+      body = await new Promise((resolve, reject) => {
+        let data = ''
+        req.on('data', chunk => { data += chunk })
+        req.on('end', () => {
+          try { resolve(JSON.parse(data)) }
+          catch (e) { reject(e) }
+        })
       })
-    })
+    } catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: `Bad chat request: ${e.message}` }))
+      return
+    }
 
     const msgCount = body.messages?.length || 0
     const lastMsg = body.messages?.[msgCount - 1]
@@ -1950,8 +2055,9 @@ const learning = createLearning({
   formatDataStreamPart,
 })
 
-server.listen(3001, () => {
-  console.log('[api] listening on http://localhost:3001')
+// ARISTO_API_PORT: test-only override (the app and UI always use 3001).
+server.listen(Number(process.env.ARISTO_API_PORT ?? 3001), () => {
+  console.log(`[api] listening on http://localhost:${server.address().port}`)
   warmUpModel()
 })
 

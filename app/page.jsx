@@ -77,7 +77,13 @@ function ChatPage() {
         : messages
       return { messages: sent, autoSearch: autoSearchRef.current }
     },
+    // Stall guard: the server always ends a turn with finish_message or an error
+    // part. finishReason 'unknown' = the stream closed with neither (API died /
+    // connection cut) — say so instead of leaving a half answer looking complete.
+    onFinish: (_m, { finishReason }) => setStreamCut(finishReason === 'unknown'),
   })
+  const [streamCut, setStreamCut] = useState(false)
+  useEffect(() => { if (status === 'submitted') setStreamCut(false) }, [status])
 
   // What the model actually receives — also what the context meter measures and
   // what re-compaction summarizes.
@@ -351,9 +357,9 @@ function ChatPage() {
           </div>
 
           {/* Chat error — show the real failure instead of silently returning nothing */}
-          {error && !isBusy && (
+          {(error || streamCut) && !isBusy && (
             <div role="alert" className="mx-auto my-4 max-w-xl rounded-md border border-wrong-border bg-wrong px-4 py-3 text-sm text-wrong-text" dir="auto">
-              {error.message || 'אירעה שגיאה בעת יצירת התשובה.'}
+              {error ? (error.message || 'אירעה שגיאה בעת יצירת התשובה.') : 'החיבור לשרת נקטע לפני סוף התשובה — התשובה עשויה להיות חלקית.'}
             </div>
           )}
 
