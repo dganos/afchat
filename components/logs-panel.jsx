@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { Terminal, ChevronUp, ChevronDown } from 'lucide-react'
+import { adminGet } from '@/lib/admin-api'
 
 export function LogsPanel() {
   const [logs, setLogs] = useState({ ollama: [], api: [] })
@@ -10,14 +11,36 @@ export function LogsPanel() {
   const scrollRef = useRef(null)
 
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.electronLogs) {
+    if (typeof window === 'undefined') return
+    if (window.electronLogs) {
       window.electronLogs.onLog((source, text) => {
         setLogs(prev => ({
           ...prev,
           [source]: [...prev[source], { time: new Date().toLocaleTimeString(), text: text.trimEnd() }].slice(-200)
         }))
       })
+      return
     }
+    // Browser: poll the background server's log buffer.
+    let since = 0, alive = true, timer
+    const tick = async () => {
+      try {
+        const { entries } = await adminGet(`logs?since=${since}`)
+        if (entries.length) {
+          since = entries[entries.length - 1].seq
+          setLogs(prev => {
+            const next = { ollama: [...prev.ollama], api: [...prev.api] }
+            for (const e of entries) {
+              if (next[e.source]) next[e.source].push({ time: new Date(e.time).toLocaleTimeString(), text: e.text })
+            }
+            return { ollama: next.ollama.slice(-200), api: next.api.slice(-200) }
+          })
+        }
+      } catch { /* server down — keep polling */ }
+      if (alive) timer = setTimeout(tick, 2000)
+    }
+    tick()
+    return () => { alive = false; clearTimeout(timer) }
   }, [])
 
   useEffect(() => {

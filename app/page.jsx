@@ -9,7 +9,7 @@ import { Message, MessageContent } from '@/components/ai-elements/message'
 import { PromptInput, PromptInputTextarea, PromptInputSubmit } from '@/components/ai-elements/prompt-input'
 import { Tool } from '@/components/ai-elements/tool'
 import { Reasoning } from '@/components/ai-elements/reasoning'
-import { FolderOpen, Settings2, Archive, GraduationCap } from 'lucide-react'
+import { FolderOpen, Settings2, Archive, GraduationCap, Server } from 'lucide-react'
 import { HelicopterLoader } from '@/components/helicopter-loader'
 import { ResponseTimer } from '@/components/response-timer'
 import { LogsPanel } from '@/components/logs-panel'
@@ -20,6 +20,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { ContextMeter } from '@/components/context-meter'
 import { ScoreRow } from '@/components/score-row'
 import { LearningApp } from '@/components/learning/learning-app'
+import { AdminApp } from '@/components/admin-app'
 import { SessionSidebar, loadSessions, saveSessions, newSessionId, sessionTitle } from '@/components/session-sidebar'
 
 const textOf = (m) => (m?.parts || []).filter((p) => p.type === 'text').map((p) => p.text).join('').trim() || m?.content || ''
@@ -30,6 +31,7 @@ export default function Page() {
   const [view, setView] = useState(null)
   useEffect(() => { setView(new URLSearchParams(window.location.search).get('view') || 'chat') }, [])
   if (view === null) return null
+  if (view === 'admin') return <AdminApp />
   return view === 'learning' ? <LearningApp /> : <ChatPage />
 }
 
@@ -327,6 +329,14 @@ function ChatPage() {
             <FolderOpen className="h-3.5 w-3.5" />
             מסמכים
           </button>
+          <a
+            href="?view=admin"
+            aria-label="ניהול שרת"
+            title="ניהול שרת"
+            className="flex items-center justify-center h-9 w-9 text-fg-muted rounded-md hover:bg-surface-2 hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Server className="h-3.5 w-3.5" />
+          </a>
           <button
             onClick={() => setSettingsOpen(true)}
             aria-label="הגדרות"
