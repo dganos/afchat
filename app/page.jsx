@@ -3,7 +3,7 @@
 import { useChat } from '@ai-sdk/react'
 import { Streamdown } from 'streamdown'
 import { code } from '@streamdown/code'
-import { useRef, useEffect, useState, Fragment } from 'react'
+import { useRef, useEffect, useState, useCallback, Fragment } from 'react'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
 import { Message, MessageContent } from '@/components/ai-elements/message'
 import { PromptInput, PromptInputTextarea, PromptInputSubmit } from '@/components/ai-elements/prompt-input'
@@ -20,6 +20,7 @@ import { ThemeToggle } from '@/components/theme-toggle'
 import { ContextMeter } from '@/components/context-meter'
 import { ScoreRow } from '@/components/score-row'
 import { LearningApp } from '@/components/learning/learning-app'
+import { SessionSidebar, loadSessions, saveSessions, newSessionId, sessionTitle } from '@/components/session-sidebar'
 
 const textOf = (m) => (m?.parts || []).filter((p) => p.type === 'text').map((p) => p.text).join('').trim() || m?.content || ''
 
@@ -107,14 +108,6 @@ function ChatPage() {
     setCompacting(false)
   }
 
-  // Clear the conversation and start fresh. Also drops any compaction summary so
-  // the next turn starts from an empty context.
-  const clearHistory = () => {
-    setMessages([])
-    compactionRef.current = null
-    setCompaction(null)
-  }
-
   const [docsOpen, setDocsOpen] = useState(false)
   const isStreaming = status === 'streaming'
   const isWaiting = status === 'submitted'
@@ -168,8 +161,130 @@ function ChatPage() {
     prevBusyRef.current = isBusy
   }, [isBusy, messages])
 
+  // ── Conversation history (localStorage) ──────────────────────────────────
+  // The active conversation is saved whenever the chat is idle and its content
+  // changed (i.e. when a response finishes, not on every streamed token).
+  const [sessions, setSessions] = useState([])
+  const sessionsRef = useRef([])
+  const [activeId, setActiveId] = useState(null)
+  const activeIdRef = useRef(null)
+  const lastSavedRef = useRef('')          // signature of what's stored for the active session
+  const pendingLoadRef = useRef(undefined) // session id (or null = new chat) to open once streaming stops
+  const [dismissedError, setDismissedError] = useState(null)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  useEffect(() => {
+    const list = loadSessions()
+    sessionsRef.current = list
+    setSessions(list)
+    const saved = localStorage.getItem('aristo-sidebar-collapsed')
+    setSidebarCollapsed(saved != null ? saved === '1' : window.innerWidth < 900)
+  }, [])
+
+  const toggleSidebar = () => {
+    setSidebarCollapsed((c) => {
+      try { localStorage.setItem('aristo-sidebar-collapsed', c ? '0' : '1') } catch {}
+      return !c
+    })
+  }
+
+  const signature = (msgs, comp, durs) => JSON.stringify([msgs, comp, durs])
+
+  const commitSessions = (list, keepId) => {
+    const stored = saveSessions(list, keepId)
+    sessionsRef.current = stored
+    setSessions(stored)
+  }
+
+  // Upsert the active conversation (creating it on first save).
+  const persistActive = useCallback((msgs, comp, durs) => {
+    if (!msgs.length) return
+    const sig = signature(msgs, comp, durs)
+    if (sig === lastSavedRef.current && activeIdRef.current) return
+    const now = Date.now()
+    let id = activeIdRef.current
+    const existing = id && sessionsRef.current.find((s) => s.id === id)
+    if (!id) { id = newSessionId(); activeIdRef.current = id; setActiveId(id) }
+    const session = {
+      id,
+      title: sessionTitle(msgs),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      messages: msgs,
+      compaction: comp || null,
+      durations: durs || {},
+    }
+    commitSessions([session, ...sessionsRef.current.filter((s) => s.id !== id)], id)
+    lastSavedRef.current = sig
+  }, [])
+
+  // Open a stored conversation (id) or a fresh one (null), resetting all
+  // per-conversation UI state on this page.
+  const applyLoad = (id) => {
+    const s = id ? sessionsRef.current.find((x) => x.id === id) : null
+    const msgs = s ? s.messages : []
+    const comp = s?.compaction || null
+    const durs = s?.durations || {}
+    setMessages(msgs)
+    compactionRef.current = comp
+    setCompaction(comp)
+    setDurations(durs)
+    startRef.current = null
+    activeIdRef.current = s ? s.id : null
+    setActiveId(s ? s.id : null)
+    lastSavedRef.current = s ? signature(msgs, comp, durs) : ''
+  }
+
+  // Switching while a response streams: stop it first, then load once the
+  // chat is idle again (see effect below) so no late chunk lands in the new chat.
+  const requestLoad = (id) => {
+    setDismissedError(error ?? null)
+    if (isBusy) {
+      pendingLoadRef.current = id
+      stop()
+    } else {
+      pendingLoadRef.current = undefined
+      applyLoad(id)
+    }
+  }
+
+  useEffect(() => {
+    if (isBusy) return
+    if (pendingLoadRef.current !== undefined) {
+      const target = pendingLoadRef.current
+      pendingLoadRef.current = undefined
+      persistActive(messages, compactionRef.current, durations)  // keep the partial answer
+      applyLoad(target)
+      return
+    }
+    persistActive(messages, compaction, durations)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBusy, messages, compaction, durations])
+
+  const newChat = () => requestLoad(null)
+  const selectSession = (id) => { if (id !== activeIdRef.current) requestLoad(id) }
+  const deleteSession = (id) => {
+    commitSessions(sessionsRef.current.filter((s) => s.id !== id))
+    if (id === activeIdRef.current) requestLoad(null)
+  }
+
+  // Settings → "Clear conversation": start a fresh chat (the stored copy stays
+  // in history and can be deleted from the sidebar).
+  const clearHistory = () => requestLoad(null)
+
   return (
-    <div className="flex flex-col h-screen" dir="rtl">
+    <div className="flex h-screen" dir="ltr">
+    {/* History sits on the physical LEFT; the chat column keeps its RTL layout. */}
+    <SessionSidebar
+      sessions={sessions}
+      activeId={activeId}
+      onSelect={selectSession}
+      onNew={newChat}
+      onDelete={deleteSession}
+      collapsed={sidebarCollapsed}
+      onToggle={toggleSidebar}
+    />
+    <div className="flex flex-col flex-1 min-w-0 h-full" dir="rtl">
       {/* Header */}
       <header dir="ltr" className="flex items-center gap-2.5 px-4 py-2 border-b border-border bg-canvas">
         <img src="./aristo-logo.png" alt="Aristo" className="h-20 w-auto select-none" draggable="false" />
@@ -351,7 +466,7 @@ function ChatPage() {
           </div>
 
           {/* Chat error — show the real failure instead of silently returning nothing */}
-          {error && !isBusy && (
+          {error && !isBusy && error !== dismissedError && (
             <div role="alert" className="mx-auto my-4 max-w-xl rounded-md border border-wrong-border bg-wrong px-4 py-3 text-sm text-wrong-text" dir="auto">
               {error.message || 'אירעה שגיאה בעת יצירת התשובה.'}
             </div>
@@ -392,6 +507,7 @@ function ChatPage() {
       <LogsPanel />
       <DocumentsPanel open={docsOpen} onClose={() => setDocsOpen(false)} />
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} settings={settings} onSettingsChange={saveSettings} onClearHistory={clearHistory} hasHistory={messages.length > 0} />
+    </div>
     </div>
   )
 }
