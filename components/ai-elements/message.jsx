@@ -13,7 +13,9 @@ export function Message({ children, from = 'assistant', isThinking = false, clas
       className={cn('flex gap-3 mb-3', isUser ? 'flex-row-reverse' : '', className)}
     >
       <MessageAvatar role={from} isThinking={isThinking} />
-      <div className={cn('flex flex-col gap-1', isUser ? 'items-end' : 'items-start', 'max-w-[86%]')}>
+      {/* Assistant answers get a FIXED width (not shrink-to-fit), so the bubble
+          doesn't widen token by token while the answer streams in. */}
+      <div className={cn('flex flex-col gap-1', isUser ? 'items-end max-w-[86%]' : 'items-stretch w-[86%] min-w-0')}>
         {children}
       </div>
     </div>
