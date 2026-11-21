@@ -1067,7 +1067,9 @@ const TEXT_CALL_RE = /call:\s*[a-zA-Z_]\w*\s*\{/  // gemma sometimes emits a too
 // Transient connection failures we can safely retry. The most common is an idle
 // keep-alive socket that Ollama closed and undici's pool then reused → ECONNRESET
 // on the first request after a pause (e.g. right after warm-up).
-const TRANSIENT_NET_RE = /ECONNRESET|fetch failed|socket hang up|other side closed|EPIPE/i
+// ECONNREFUSED: node:http reports "connect ECONNREFUSED ..." (fetch wrapped it in
+// "fetch failed"), e.g. Ollama restarting — retried as before the http switch.
+const TRANSIENT_NET_RE = /ECONNRESET|ECONNREFUSED|fetch failed|socket hang up|other side closed|EPIPE/i
 const isTransientNetErr = (e) =>
   TRANSIENT_NET_RE.test(`${e?.message || ''} ${e?.cause?.message || e?.cause || ''}`)
 
@@ -1082,6 +1084,7 @@ const isTransientNetErr = (e) =>
 // agent:false = a fresh localhost socket per turn, so no stale keep-alive reuse.
 const OLLAMA_IDLE_TIMEOUT_MS = parseInt(process.env.ARISTO_OLLAMA_IDLE_TIMEOUT_MS, 10) || 20 * 60 * 1000
 class OllamaStreamError extends Error {}
+const STREAM_CUT_MSG = 'החיבור למודל נקטע באמצע התשובה.'
 // Resolves { res, failure } once headers arrive; failure.err is set if the idle
 // timeout later kills the body (the body iterator then throws a generic 'aborted').
 function postOllamaStream(pathname, payload, signal) {
@@ -1128,7 +1131,7 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
       if (upto > sentLen) { send('text', content.slice(sentLen, upto)); sentLen = upto; emitted = true }
     }
 
-    let failure = { err: null }
+    let failure = { err: null }, bodyStarted = false
     try {
       const sent = await postOllamaStream('/api/chat', {
         model: modelOverride || currentModel, messages,
@@ -1144,6 +1147,7 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
       }, signal)
       const r = sent.res
       failure = sent.failure
+      bodyStarted = true
       if (r.statusCode < 200 || r.statusCode >= 300) {
         let detail = ''
         try { for await (const c of r) detail += c } catch { /* ignore */ }
@@ -1187,10 +1191,20 @@ async function streamOneOllamaTurn({ messages, ollamaTools, temp, numCtx, send, 
       // died / the connection was cut mid-generation. Previously the partial text
       // was silently accepted as the final answer.
       if (!gotDone) {
-        throw new OllamaStreamError('החיבור למודל נקטע באמצע התשובה. (Ollama stream ended without a done line — the model runner may have crashed, e.g. low RAM; see the ollama log)')
+        flushContent(true)  // show the held-back tail before the error
+        throw new OllamaStreamError(STREAM_CUT_MSG + ' (Ollama stream ended without a done line — the model runner may have crashed, e.g. low RAM; see the ollama log)')
       }
     } catch (e) {
       if (failure.err) e = failure.err  // idle timeout surfaced as a generic 'aborted'
+      // The socket dropped mid-body (Ollama killed / connection reset) — not a
+      // user abort and not our idle timeout. Node reports just "aborted" or
+      // ECONNRESET; say what happened and keep the partial answer visible. Not
+      // retried: the prefill was already paid and the model may have crashed.
+      else if (bodyStarted && !signal.aborted && !(e instanceof OllamaStreamError) &&
+               (e?.code === 'ECONNRESET' || /aborted|ECONNRESET/i.test(e?.message || ''))) {
+        flushContent(true)
+        e = new OllamaStreamError(`${STREAM_CUT_MSG} (Ollama connection dropped mid-stream: ${e.message || e.code})`)
+      }
       // Retry a fresh connection once if Ollama dropped the socket before we
       // streamed anything; otherwise surface the failure.
       if (!(e instanceof OllamaStreamError) && attempt < transientRetries - 1 && !emitted && !signal.aborted && isTransientNetErr(e)) {

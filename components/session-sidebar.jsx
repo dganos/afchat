@@ -41,20 +41,21 @@ const isQuotaError = (e) =>
   e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22 || e.code === 1014)
 
 // Write the list (newest first, capped). If the quota is hit, drop the oldest
-// sessions — never the one being kept (`keepId`) — until it fits. Returns the
-// list that was actually stored.
+// sessions — never the one being kept (`keepId`) — until it fits. Returns
+// { list, failed }: the list to show, and null | 'quota' (the kept session alone
+// is too big) | 'error' when nothing was written.
 export function saveSessions(sessions, keepId) {
   let list = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS)
   for (;;) {
     try {
       localStorage.setItem(SESSIONS_KEY, JSON.stringify(list))
-      return list
+      return { list, failed: null }
     } catch (e) {
-      if (!isQuotaError(e)) { console.error('Failed to save sessions:', e); return list }
+      if (!isQuotaError(e)) { console.error('Failed to save sessions:', e); return { list, failed: 'error' } }
       // list is newest-first → drop the last (oldest) one that isn't kept
       let dropIdx = -1
       for (let i = list.length - 1; i >= 0; i--) if (list[i].id !== keepId) { dropIdx = i; break }
-      if (dropIdx < 0) { console.warn('Session history exceeds storage quota; not saved'); return list }
+      if (dropIdx < 0) { console.warn('Session history exceeds storage quota; not saved'); return { list, failed: 'quota' } }
       list = list.filter((_, i) => i !== dropIdx)
     }
   }
@@ -73,7 +74,7 @@ const fmtDate = (ts) => {
 
 // Conversation history on the physical LEFT edge of the window. Collapsible to
 // a thin rail so it doesn't steal width on small windows.
-export function SessionSidebar({ sessions, activeId, onSelect, onNew, onDelete, collapsed, onToggle }) {
+export function SessionSidebar({ sessions, activeId, onSelect, onNew, onDelete, collapsed, onToggle, saveFailed }) {
   const [confirmId, setConfirmId] = useState(null)
   const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
   const confirming = sessions.find((s) => s.id === confirmId)
@@ -111,6 +112,12 @@ export function SessionSidebar({ sessions, activeId, onSelect, onNew, onDelete, 
           שיחה חדשה
         </button>
       </div>
+
+      {saveFailed && (
+        <p role="status" className="mx-3 mb-2 rounded-md border border-wrong-border bg-wrong px-2 py-1.5 text-[11px] text-wrong-text">
+          {saveFailed === 'quota' ? 'השיחה גדולה מדי לשמירה' : 'שמירת השיחה נכשלה'}
+        </p>
+      )}
 
       <nav className="flex-1 overflow-y-auto px-2 pb-2" aria-label="רשימת שיחות">
         {sorted.length === 0 ? (

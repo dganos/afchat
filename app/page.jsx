@@ -95,9 +95,13 @@ function ChatPage() {
   // Claude-style compact: summarize the running context server-side, then route
   // future turns through that summary. The visible conversation stays intact.
   const [compacting, setCompacting] = useState(false)
+  const loadGenRef = useRef(0)  // bumped on every conversation load (see applyLoad)
   const compactContext = async () => {
     if (compacting || messages.length === 0) return
     setCompacting(true)
+    // The user may switch / start a conversation while /compact runs: tag the
+    // request with the current load and drop the result if another one opened.
+    const gen = loadGenRef.current
     try {
       const r = await fetch('http://localhost:3001/compact', {
         method: 'POST',
@@ -105,7 +109,7 @@ function ChatPage() {
         body: JSON.stringify({ messages: effectiveContext }),
       })
       const data = await r.json()
-      if (data.summary) {
+      if (data.summary && gen === loadGenRef.current) {
         const next = { summary: data.summary, count: messages.length }
         compactionRef.current = next
         setCompaction(next)
@@ -176,6 +180,8 @@ function ChatPage() {
   const activeIdRef = useRef(null)
   const lastSavedRef = useRef('')          // signature of what's stored for the active session
   const pendingLoadRef = useRef(undefined) // session id (or null = new chat) to open once streaming stops
+  const deletedIdsRef = useRef(new Set())  // never write these back (see persistActive)
+  const [saveFailed, setSaveFailed] = useState(null)
   const [dismissedError, setDismissedError] = useState(null)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
@@ -197,14 +203,18 @@ function ChatPage() {
   const signature = (msgs, comp, durs) => JSON.stringify([msgs, comp, durs])
 
   const commitSessions = (list, keepId) => {
-    const stored = saveSessions(list, keepId)
+    const { list: stored, failed } = saveSessions(list, keepId)
     sessionsRef.current = stored
     setSessions(stored)
+    setSaveFailed(failed)
   }
 
   // Upsert the active conversation (creating it on first save).
   const persistActive = useCallback((msgs, comp, durs) => {
     if (!msgs.length) return
+    // Deleted while it was still open (e.g. mid-stream): the deferred save that
+    // runs before the next load must not resurrect it.
+    if (activeIdRef.current && deletedIdsRef.current.has(activeIdRef.current)) return
     const sig = signature(msgs, comp, durs)
     if (sig === lastSavedRef.current && activeIdRef.current) return
     const now = Date.now()
@@ -231,6 +241,7 @@ function ChatPage() {
     const msgs = s ? s.messages : []
     const comp = s?.compaction || null
     const durs = s?.durations || {}
+    loadGenRef.current++
     setMessages(msgs)
     compactionRef.current = comp
     setCompaction(comp)
@@ -271,6 +282,7 @@ function ChatPage() {
   const newChat = () => requestLoad(null)
   const selectSession = (id) => { if (id !== activeIdRef.current) requestLoad(id) }
   const deleteSession = (id) => {
+    deletedIdsRef.current.add(id)
     commitSessions(sessionsRef.current.filter((s) => s.id !== id))
     if (id === activeIdRef.current) requestLoad(null)
   }
@@ -290,6 +302,7 @@ function ChatPage() {
       onDelete={deleteSession}
       collapsed={sidebarCollapsed}
       onToggle={toggleSidebar}
+      saveFailed={saveFailed}
     />
     <div className="flex flex-col flex-1 min-w-0 h-full" dir="rtl">
       {/* Header */}

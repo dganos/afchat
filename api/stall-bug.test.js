@@ -22,7 +22,7 @@ const { createFakeOllama } = require('./test-support/fake-ollama')
 const CHAT_JS = process.env.STALL_TEST_CHAT_JS || path.join(__dirname, 'chat.js')
 const IDLE_MS = 1500  // ARISTO_OLLAMA_IDLE_TIMEOUT_MS for the child (prod default: 20 min)
 
-let fake, child, apiPort, logs = ''
+let fake, child, apiPort, ollamaPort, logs = ''
 
 const freePort = () => new Promise((resolve) => {
   const s = require('net').createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)) })
@@ -30,7 +30,7 @@ const freePort = () => new Promise((resolve) => {
 
 test.before(async () => {
   fake = createFakeOllama()
-  const ollamaPort = await fake.listen()
+  ollamaPort = await fake.listen()
   apiPort = await freePort()
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aristo-stall-'))
   const docs = path.join(tmp, 'docs'); fs.mkdirSync(docs)
@@ -206,4 +206,33 @@ test('client disconnect mid-stream aborts the Ollama request (no ghost generatio
   assert.ok(out.aborted)
   await new Promise((r) => setTimeout(r, 300))
   assert.deepStrictEqual(fake.closedEarly, [0])
+})
+
+test('socket dropped mid-answer → Hebrew cut-connection error, held-back tail flushed', async () => {
+  const out = await ask([{ chunks: [...THINK, { content: 'The maximum weight is 9,800 kg' }], end: 'destroy' }])
+  assertNotSilent(out)
+  assert.strictEqual(out.text, 'The maximum weight is 9,800 kg', 'the 16-char holdback must be flushed before the error')
+  assert.match(out.errors[0] || '', /החיבור למודל נקטע/)
+  assert.match(out.errors[0] || '', /dropped mid-stream/)
+  assert.strictEqual(fake.chatRequests.length, 1, 'a mid-stream drop must not be retried')
+})
+
+test('stream cut without done line also flushes the held-back tail', async () => {
+  const out = await ask([{ chunks: [{ content: 'The maximum weight is 9,800 kg' }], end: 'cut' }])
+  assert.strictEqual(out.text, 'The maximum weight is 9,800 kg')
+  assert.match(out.errors[0] || '', /החיבור למודל נקטע/)
+})
+
+// Keep LAST-ish: briefly takes the fake Ollama down.
+test('connection refused (Ollama down) is retried as transient, then surfaces an error', async () => {
+  await fake.close()
+  logs = ''
+  try {
+    const out = await ask([])
+    assertNotSilent(out)
+    assert.match(out.errors[0] || '', /ECONNREFUSED/)
+    assert.match(logs, /transient Ollama connection drop, retrying/)
+  } finally {
+    await fake.listen(ollamaPort)
+  }
 })

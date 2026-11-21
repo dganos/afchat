@@ -76,7 +76,8 @@ function createFakeOllama() {
     const end = turn.end || 'done'
     finished = true
     if (end === 'cut') return res.end()
-    if (end === 'destroy') return res.socket.destroy()
+    // let the written chunks reach the client first: destroy() discards unflushed writes
+    if (end === 'destroy') { await sleep(30); return res.socket.destroy() }
     if (end === 'error') { line({ error: turn.errorText || 'fake runner error' }); return res.end() }
     line({ ...base(), message: { role: 'assistant', content: '' }, done: true, done_reason: turn.doneReason || 'stop', prompt_eval_count: 10, eval_count: 20 })
     res.end()
@@ -84,7 +85,7 @@ function createFakeOllama() {
 
   return {
     MODEL,
-    listen: () => new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port))),
+    listen: (port = 0) => new Promise((r) => server.listen(port, '127.0.0.1', () => r(server.address().port))),
     close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(() => r()) }),
     setScript: (turns) => { script = turns.slice(); chatRequests.length = 0; closedEarly.length = 0 },
     remaining: () => script.length,
