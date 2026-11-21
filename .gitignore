@@ -38,3 +38,4 @@ resources/ollama
 .embed_cache_*.json
 **/.embed_cache_*.json
 afchat_lab/results_124_long_rag/
+.claude/worktrees/
