@@ -3,9 +3,8 @@
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
-    "dev": "concurrently \"next dev\" \"node start-server.js\"",
-    "start": "next build && node start-server.js",
-    "build:web": "next build",
+    "dev": "concurrently \"next dev\" \"electron .\"",
+    "start": "next build && electron .",
     "build": "next build && electron-builder",
     "server": "node start-server.js",
     "electron": "electron .",

@@ -1413,100 +1413,11 @@ function visibleOutcomeProblem(turn) {
   return null
 }
 
-// Built web app (next export → out/), served by this same server so the browser
-// app and the API share one origin. Missing dir = API-only (e.g. `next dev` mode).
-const WEB_DIR = process.env.ARISTO_WEB_DIR || path.join(__dirname, '..', 'out')
-const MIME = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png',
-  '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
-  '.woff': 'font/woff', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8',
-  '.map': 'application/json', '.webp': 'image/webp',
-}
-function serveStatic(req, res) {
-  if (req.method !== 'GET' && req.method !== 'HEAD') return false
-  let rel
-  try { rel = decodeURIComponent(new URL(req.url, 'http://x').pathname) } catch { return false }
-  const root = path.resolve(WEB_DIR)
-  let file = path.resolve(root, '.' + rel)
-  if (!file.startsWith(root)) return false                 // path traversal
-  try { if (fs.statSync(file).isDirectory()) file = path.join(file, 'index.html') } catch { return false }
-  if (!fs.existsSync(file)) return false
-  res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' })
-  if (req.method === 'HEAD') { res.end(); return true }
-  fs.createReadStream(file).pipe(res)
-  return true
-}
-
-// Admin endpoints (the web admin page). The server only listens on localhost, and
-// every /admin call must carry the X-Aristo-Admin header: a custom header forces a
-// CORS preflight, which only our own UI origins pass — so another website open in
-// the user's browser can't read logs or shut the server down.
-const ADMIN_ORIGINS = new Set(['http://localhost:3000', 'http://127.0.0.1:3000'])
-async function handleAdmin(req, res) {
-  const url = new URL(req.url, 'http://x')
-  if (!url.pathname.startsWith('/admin/')) return false
-  const json = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
-  if (!req.headers['x-aristo-admin']) { json(403, { error: 'missing X-Aristo-Admin header' }); return true }
-  const sup = globalThis.aristoSupervisor
-  const logs = require('./log-buffer')
-
-  if (req.method === 'GET' && url.pathname === '/admin/status') {
-    json(200, {
-      pid: process.pid,
-      node: process.version,
-      startedAt: sup?.startedAt ?? null,
-      uptimeSec: Math.round(process.uptime()),
-      apiPort: server.address()?.port ?? null,
-      managed: !!sup,
-      ollama: sup ? { ...sup.ollamaStatus(), port: sup.ollamaPort } : null,
-      model: { name: currentModel, ready: modelReady, error: modelError },
-      memory: { total: os.totalmem(), free: availableMemory(), rss: process.memoryUsage().rss },
-      docsPath: DOCS_PATH,
-      dataDir: DATA_DIR,
-      logFile: sup?.logFile ?? null,
-    })
-    return true
-  }
-  if (req.method === 'GET' && url.pathname === '/admin/logs') {
-    const after = Number(url.searchParams.get('since') || 0)
-    const source = url.searchParams.get('source') || null
-    json(200, { entries: logs.since(after, source) })
-    return true
-  }
-  if (req.method === 'POST' && url.pathname === '/admin/restart-ollama') {
-    if (!sup) { json(409, { error: 'not running under the server supervisor' }); return true }
-    console.log('[api] admin: restarting ollama')
-    warmUpGen++                      // an in-flight warm-up dies with Ollama — ignore its error
-    modelReady = false; modelError = null
-    await sup.restartOllama()
-    warmUpModel()
-    json(200, { ok: true })
-    return true
-  }
-  if (req.method === 'POST' && url.pathname === '/admin/reload-model') {
-    console.log('[api] admin: reloading model')
-    modelReady = false; modelError = null
-    warmUpModel()
-    json(200, { ok: true })
-    return true
-  }
-  if (req.method === 'POST' && url.pathname === '/admin/shutdown') {
-    if (!sup) { json(409, { error: 'not running under the server supervisor' }); return true }
-    json(200, { ok: true })
-    setTimeout(() => sup.shutdown(), 200)
-    return true
-  }
-  json(404, { error: 'unknown admin endpoint' })
-  return true
-}
-
 const server = http.createServer(async (req, res) => {
-  // CORS — the UI is served from this same origin; `next dev` (port 3000) calls cross-origin.
+  // CORS headers — required for Electron renderer to call this
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers',
-    ADMIN_ORIGINS.has(req.headers.origin) ? 'Content-Type, X-Aristo-Admin' : 'Content-Type')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
   if (req.method === 'OPTIONS') {
     res.writeHead(200)
@@ -1519,8 +1430,6 @@ const server = http.createServer(async (req, res) => {
     res.end('ok')
     return
   }
-
-  if (await handleAdmin(req, res)) return
 
   // Warm-up status — the UI polls this and blocks input with a loader until the
   // model is loaded, so the first question is never slowed by a cold model load.
@@ -2133,8 +2042,6 @@ const server = http.createServer(async (req, res) => {
   // Continuous Learning: feedback, prompt versions, compile sessions (api/learning.js)
   if (await learning.handle(req, res)) return
 
-  if (serveStatic(req, res)) return
-
   res.writeHead(404)
   res.end()
 })
@@ -2163,8 +2070,7 @@ const learning = createLearning({
 })
 
 // ARISTO_API_PORT: test-only override (the app and UI always use 3001).
-// Localhost only by design — the server is managed and used from this machine.
-server.listen(Number(process.env.ARISTO_API_PORT ?? 3001), process.env.ARISTO_API_HOST || '127.0.0.1', () => {
+server.listen(Number(process.env.ARISTO_API_PORT ?? 3001), () => {
   console.log(`[api] listening on http://localhost:${server.address().port}`)
   warmUpModel()
 })
@@ -2174,12 +2080,7 @@ server.listen(Number(process.env.ARISTO_API_PORT ?? 3001), process.env.ARISTO_AP
 // keep_alive tells Ollama to allocate weights/KV cache and stay resident; it returns
 // once the runner is ready. Best-effort — retries a few times while Ollama finishes
 // starting, and never blocks the server.
-// Each call supersedes earlier ones (admin reload / Ollama restart while a warm-up is
-// still in flight): a stale warm-up must not overwrite the newer one's state.
-let warmUpGen = 0
 async function warmUpModel() {
-  const gen = ++warmUpGen
-  const stale = () => gen !== warmUpGen
   const sleep = (ms) => new Promise(res => setTimeout(res, ms))
   try {
     if (!AGENT) { modelError = agentLoadError || 'Agent package not loaded.'; console.warn('[api] warm-up skipped: no agent package'); return }
@@ -2222,7 +2123,6 @@ async function warmUpModel() {
         options: { num_ctx: AGENT?.model?.context_length || undefined, num_thread: NUM_THREAD },
       }),
     })
-    if (stale()) return
     if (r.ok) {
       modelReady = true
       modelError = null
@@ -2233,7 +2133,6 @@ async function warmUpModel() {
       console.warn(`[api] warm-up returned HTTP ${r.status}: ${modelError}`)
     }
   } catch (e) {
-    if (stale()) return
     // Don't claim the model is ready when it isn't — report the real reason
     // (memory hint when it won't fit) so the UI shows it instead of a perpetual
     // loader followed by a silent failure.

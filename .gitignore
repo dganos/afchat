@@ -6,7 +6,6 @@ resources/ollama/
 out/
 dist/
 .env
-.data/
 .playwright-mcp/
 .build-cache/
 .build-stash/
