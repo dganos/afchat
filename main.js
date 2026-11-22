@@ -109,6 +109,9 @@ app.whenReady().then(async () => {
   // Pass documents path + the private Ollama port to the API server via env, so
   // it talks to our bundled Ollama and never the system default port.
   process.env.DOCS_PATH = getResourcePath('documents')
+  // The installer ships NO documents (the user adds their own), so create the
+  // folder on first launch — uploads and the folder tools need it to exist.
+  try { fs.mkdirSync(process.env.DOCS_PATH, { recursive: true }) } catch {}
   process.env.ARISTO_OLLAMA_PORT = OLLAMA_PORT
   // Writable dir for user edits (e.g. the system-prompt override) — userData is
   // writable in both dev and packaged builds (the bundled resources are not).

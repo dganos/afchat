@@ -1,6 +1,6 @@
 {
   "name": "aristo",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "main": "main.js",
   "scripts": {
     "dev": "concurrently \"next dev\" \"electron .\"",
@@ -44,6 +44,7 @@
     "compression": "store",
     "files": [
       "main.js",
+      "preload.js",
       "api/**/*",
       "out/**/*",
       "packages/**/*"
@@ -52,10 +53,6 @@
       {
         "from": "resources/ollama",
         "to": "ollama"
-      },
-      {
-        "from": "resources/documents",
-        "to": "documents"
       }
     ],
     "linux": {
